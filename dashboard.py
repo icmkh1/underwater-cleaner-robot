@@ -32,11 +32,13 @@ from PySide2.QtCore import QSize, Qt, QRectF, QTimer, Signal
 from PySide2.QtGui import (QColor, QFont, QImage, QLinearGradient, QPainter,
                            QPen, QPixmap, QRadialGradient)
 from PySide2.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -173,7 +175,7 @@ class DepthGauge(QWidget):
         p.end()
 
 
-def _panel(title, accent=CYAN):
+def _panel(title, accent=CYAN, title_size=14):
     """通用面板：Fluent 风卡片 —— 圆角 + 柔和渐变 + 标题左侧accent条 + 细分隔线"""
     box = QFrame()
     box.setObjectName("dashPanel")
@@ -191,12 +193,12 @@ def _panel(title, accent=CYAN):
     hrow = QHBoxLayout()
     hrow.setSpacing(8)
     bar = QFrame()
-    bar.setFixedSize(4, 14)
+    bar.setFixedSize(4, max(14, title_size))
     bar.setStyleSheet("background:%s; border:none; border-radius:2px;" % accent)
     head = QLabel(title)
     head.setStyleSheet(
-        "color:%s; font-size:14px; font-weight:800; border:none; background:transparent;"
-        "letter-spacing:1px;" % accent)
+        "color:%s; font-size:%dpx; font-weight:800; border:none; background:transparent;"
+        "letter-spacing:1px;" % (accent, title_size))
     hrow.addWidget(bar)
     hrow.addWidget(head, 1)
     lay.addLayout(hrow)
@@ -351,6 +353,11 @@ class Dashboard(QWidget):
         self._boot = time.time()
         self._fps = 0.0
         self._last_frame_t = 0.0
+        # ---- 双摄像头：首页单画面切换 CAM1/CAM2，实时监控页左右各一路 ----
+        self._video_cam = 1            # 首页当前显示哪路（1=CAM1 2=CAM2）
+        self._frames = {1: None, 2: None}   # 两路最近帧（BGR）
+        self._sock2 = None             # CAM2 视频连接（仅收流，不发指令）
+        self._recv2 = None
 
         self.config = ConfigManager()
         self.logger = Logger(prefix="dash")
@@ -657,7 +664,7 @@ class Dashboard(QWidget):
         right.addWidget(self._equip_box)
         right.addWidget(self._motion_box)
         right.addStretch(1)          # 卡片聚顶, 下方留白（QGC 仪表盘风）
-        main.addLayout(right, 4)
+        main.addLayout(right, 5)
         outer.addLayout(main, 1)
 
         # 底部紧凑横带：任务信息 / 传感器数据 / 推进器输出与告警
@@ -690,11 +697,27 @@ class Dashboard(QWidget):
         grid.setContentsMargins(12, 8, 12, 8)
         grid.setSpacing(12)
         box, body = _panel("实时监控 · 视频与关键数据", CYAN)
-        self._monitor_video = QLabel("实时视频（连接 91 后显示）")
-        self._monitor_video.setObjectName("video")
-        self._monitor_video.setAlignment(Qt.AlignCenter)
-        self._monitor_video.setMinimumSize(640, 360)
-        body.addWidget(self._monitor_video, 1)
+        # 双摄像头画面：CAM1 在左、CAM2 在右，各占一半
+        vrow = QHBoxLayout()
+        vrow.setSpacing(10)
+        for side, tag, color in ((1, "● CAM 01", GREEN), (2, "● CAM 02", CYAN)):
+            vcol = QVBoxLayout()
+            vcol.setSpacing(4)
+            cap = QLabel(tag)
+            cap.setStyleSheet("color:%s; font-size:13px; font-weight:700;" % color)
+            cap.setAlignment(Qt.AlignLeft)
+            vcol.addWidget(cap)
+            lab = QLabel("CAM 0%d 视频（连接后显示）" % side)
+            lab.setObjectName("video")
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setMinimumSize(320, 220)
+            vcol.addWidget(lab, 1)
+            vrow.addLayout(vcol, 1)
+            if side == 1:
+                self._monitor_video = lab
+            else:
+                self._monitor_video2 = lab
+        body.addLayout(vrow, 1)
 
         osd = QHBoxLayout()
         osd.setSpacing(20)
@@ -730,12 +753,21 @@ class Dashboard(QWidget):
         self._wp_table = QTableWidget(0, 4)
         self._wp_table.setHorizontalHeaderLabels(["航点", "X(m)", "Y(m)", "动作"])
         self._wp_table.setEditTriggers(QTableWidget.AllEditTriggers)   # 可编辑，双击单元格输入
+        # 深色表格样式（公共常量，三张表共用）
+        self._wp_table.setStyleSheet(_DARK_TABLE_QSS)
+        self._wp_table.setAlternatingRowColors(True)
+        self._wp_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._wp_table.verticalHeader().setVisible(False)
+        self._wp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         body.addWidget(self._wp_table, 1)
         for i, (x, y) in enumerate([(0, 0), (4, 3), (9, 2), (14, 6), (20, 5), (26, 9)], 1):
             r = self._wp_table.rowCount()
             self._wp_table.insertRow(r)
             for c, val in enumerate([str(i), str(x), str(y), "获取图像"]):
-                self._wp_table.setItem(r, c, QTableWidgetItem(val))
+                it = QTableWidgetItem(val)
+                it.setTextAlignment(
+                    Qt.AlignCenter if c in (0, 3) else (Qt.AlignRight | Qt.AlignVCenter))
+                self._wp_table.setItem(r, c, it)
         brow = QHBoxLayout()
         btn_add = QPushButton("添加航点")
         btn_del = QPushButton("删除选中航点")
@@ -788,7 +820,10 @@ class Dashboard(QWidget):
         r = self._wp_table.rowCount()
         self._wp_table.insertRow(r)
         for c, val in enumerate([str(r + 1), "0", "0", "获取图像"]):
-            self._wp_table.setItem(r, c, QTableWidgetItem(val))
+            it = QTableWidgetItem(val)
+            it.setTextAlignment(
+                Qt.AlignCenter if c in (0, 3) else (Qt.AlignRight | Qt.AlignVCenter))
+            self._wp_table.setItem(r, c, it)
         self._refresh_path_preview()
         self._flash("已添加航点 %d（可双击编辑 X/Y/动作）" % (r + 1), "info")
 
@@ -838,18 +873,33 @@ class Dashboard(QWidget):
         grid.addWidget(box, 0, 0)
         grid.setColumnStretch(0, 2)
 
-        # 摄像头画面（与首页/实时监控同步更新）
+        # 摄像头画面（与首页/实时监控同步更新）：CAM1 左、CAM2 右
         cam_box, cam_body = _panel("摄像头", CYAN)
-        self._auto_video = QLabel("实时视频（连接主控后显示）")
-        self._auto_video.setObjectName("video")
-        self._auto_video.setAlignment(Qt.AlignCenter)
-        self._auto_video.setMinimumSize(480, 260)
-        cam_body.addWidget(self._auto_video, 1)
+        camrow = QHBoxLayout()
+        camrow.setSpacing(10)
+        for side, tag, color in ((1, "● CAM 01", GREEN), (2, "● CAM 02", CYAN)):
+            vcol = QVBoxLayout()
+            vcol.setSpacing(4)
+            cap = QLabel(tag)
+            cap.setStyleSheet("color:%s; font-size:13px; font-weight:700;" % color)
+            cap.setAlignment(Qt.AlignLeft)
+            vcol.addWidget(cap)
+            lab = QLabel("CAM 0%d 视频（连接后显示）" % side)
+            lab.setObjectName("video")
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setMinimumSize(300, 200)
+            vcol.addWidget(lab, 1)
+            camrow.addLayout(vcol, 1)
+            if side == 1:
+                self._auto_video = lab
+            else:
+                self._auto_video2 = lab
+        cam_body.addLayout(camrow, 1)
         grid.addWidget(cam_box, 0, 1)
         grid.setColumnStretch(1, 3)
 
         # 机器数据（下方 · 演示归零，字号加大、两列紧凑排布）
-        data_box, data_body = _panel("机器数据", GREEN)
+        data_box, data_body = _panel("机器数据", GREEN, title_size=18)
         mrows = QGridLayout()
         mrows.setHorizontalSpacing(22)
         mrows.setVerticalSpacing(4)
@@ -870,7 +920,7 @@ class Dashboard(QWidget):
             else:
                 value = fmt % _ZERO[key]
             lbl = QLabel(label)
-            lbl.setStyleSheet("color:%s; font-size:13px; font-weight:700;" % TXT_SUB)
+            lbl.setStyleSheet("color:%s; font-size:15px; font-weight:700;" % TXT_SUB)
             # 标签前加小图标
             grp = QWidget()
             gh = QHBoxLayout(grp)
@@ -884,7 +934,7 @@ class Dashboard(QWidget):
             gh.addWidget(lbl)
             gh.addStretch(1)
             val = QLabel(value)
-            val.setStyleSheet("color:%s; font-size:17px; font-weight:800;" % col)
+            val.setStyleSheet("color:%s; font-size:20px; font-weight:800;" % col)
             if fmt is not None:
                 _mono(val)
             row, colc = idx // 2, (idx % 2) * 2
@@ -1113,6 +1163,12 @@ class Dashboard(QWidget):
         self._data_table.horizontalHeader().setStretchLastSection(True)
         self._data_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._data_table.setAlternatingRowColors(True)
+        self._data_table.setStyleSheet(_DARK_TABLE_QSS)
+        # 行号列：保留但深色化（深蓝底 + 淡青数字 + 紧凑宽度）
+        self._data_table.verticalHeader().setDefaultSectionSize(36)
+        self._data_table.verticalHeader().setStyleSheet(
+            "QHeaderView::section{background:#152642;color:#9fe7ff;border:none;"
+            "border-right:1px solid #203452;font-size:15px;}")
         body.addWidget(self._data_table, 1)
         grid.addWidget(box, 0, 0)
         self._refresh_data_stats()
@@ -1183,6 +1239,12 @@ class Dashboard(QWidget):
         self._logs_table.horizontalHeader().setStretchLastSection(True)
         self._logs_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._logs_table.setAlternatingRowColors(True)
+        self._logs_table.setStyleSheet(_DARK_TABLE_QSS)
+        # 行号列：保留但深色化（与数据管理表一致）
+        self._logs_table.verticalHeader().setDefaultSectionSize(36)
+        self._logs_table.verticalHeader().setStyleSheet(
+            "QHeaderView::section{background:#152642;color:#9fe7ff;border:none;"
+            "border-right:1px solid #203452;font-size:15px;}")
         body.addWidget(self._logs_table, 1)
         grid.addWidget(box, 0, 0)
         return page
@@ -1267,11 +1329,14 @@ class Dashboard(QWidget):
         vrow.addLayout(depth_col)
         body.addLayout(vrow, 1)
 
-        # 底栏
+        # 底栏（CAM 01/02 切换 + 视频控制）
         bar = QHBoxLayout()
-        cam = QLabel("● CAM 01")
-        cam.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % GREEN)
-        bar.addWidget(cam)
+        self._cam_btn = QPushButton("● CAM 01")
+        self._cam_btn.setObjectName("ghostBtn")
+        self._cam_btn.setCursor(Qt.PointingHandCursor)
+        self._cam_btn.setToolTip("切换显示 CAM 1 / CAM 2")
+        self._cam_btn.clicked.connect(self._switch_cam)
+        bar.addWidget(self._cam_btn)
         bar.addStretch(1)
         self._btn_video = QPushButton("打开视频")
         self._btn_photo = QPushButton("📷 截图")
@@ -1307,12 +1372,13 @@ class Dashboard(QWidget):
         photo = QLabel()
         photo.setObjectName("rovPhoto")
         photo.setAlignment(Qt.AlignCenter)
-        photo.setFixedHeight(172)
+        photo.setFixedHeight(255)
+        photo.setFixedWidth(280)
         path = os.path.join(ASSET_DIR, "rov_photo.png")
         if os.path.exists(path):
             pm = QPixmap(path)
             if not pm.isNull():
-                photo.setPixmap(pm.scaledToHeight(140, Qt.SmoothTransformation))
+                photo.setPixmap(pm.scaledToHeight(215, Qt.SmoothTransformation))
         else:
             photo.setText("ROV 示意图（待放置俯视图）")
         photo.setStyleSheet(
@@ -1320,7 +1386,14 @@ class Dashboard(QWidget):
             "stop:0 #0e2138,stop:1 #0a1526);"
             "border:1px solid #2a4a7a;border-top:1px solid rgba(120,160,210,80);"
             "border-radius:10px;")
-        body.addWidget(photo)
+        # 左图右文布局：机器人照片在左，推进器/状态信息竖排在右
+        hrow = QHBoxLayout()
+        hrow.setSpacing(12)
+        hrow.addWidget(photo, 0, Qt.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        hrow.addLayout(col, 1)
+        body.addLayout(hrow)
 
         # 2 通道推进器状态指示（软著：左/右）—— 健康圆点 + 实时输出% （分组条）
         thr = QHBoxLayout()
@@ -1353,7 +1426,7 @@ class Dashboard(QWidget):
         gl.addStretch(1)
         thr.addWidget(grp)
         thr.addStretch(1)
-        body.addLayout(thr)
+        col.addLayout(thr)
 
         rows = [
             ("连接状态", "已连接", GREEN), ("工作模式", "手动模式", BLUE),
@@ -1363,9 +1436,9 @@ class Dashboard(QWidget):
         self._status_rows = []
         for label, value, color in rows:
             rr, val = _kv(label, value, color)
-            body.addLayout(rr)
+            col.addLayout(rr)
             self._status_rows.append((label, val))
-        body.addStretch(1)
+        col.addStretch(1)
 
     def _build_motion(self):
         body = self._motion_body
@@ -1573,6 +1646,12 @@ class Dashboard(QWidget):
             except OSError as e:
                 self._flash("发送失败：%s" % e, "err")
                 return False
+            # CAM2 从控节点同步：灯光等执行状态联动（"0000"断开不转发，避免误断视频通道）
+            if self._sock2 is not None and line.strip() != "0000":
+                try:
+                    self._sock2.sendall((line + "\n").encode("utf-8"))
+                except OSError:
+                    self._close_cam2()
         self._cmd_count += 1
         return True
 
@@ -1613,6 +1692,7 @@ class Dashboard(QWidget):
         self._connected = True
         self.config.update_robot(ip, port)
         self._set_online(True)
+        self.connect_cam2(quiet=True)   # 主控连上后顺带尝试 CAM2 视频通道
         self._flash("已连接 主控 %s:%s（视频通道就绪）" % (ip, port), "ok")
         self._btn_conn.setEnabled(False)
         self._btn_disc.setEnabled(True)
@@ -1648,6 +1728,68 @@ class Dashboard(QWidget):
         self._set_online(False)
         self._btn_conn.setEnabled(True)
         self._btn_disc.setEnabled(False)
+        self._close_cam2()          # 一并断开 CAM2 视频通道
+
+    # ------------------------------------------------------------------
+    # CAM2 第二路摄像头：仅视频流（独立端口，不发指令；指令仍走 91 主控）
+    # ------------------------------------------------------------------
+    def connect_cam2(self, quiet=True):
+        if self._recv2 is not None:
+            return
+        ip = self._ip.text().strip() or proto.DEFAULT_IP
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.5)
+            sock.connect((ip, CAM2_PORT))
+        except Exception:
+            return          # CAM2 可选：连不上静默，不打断演示
+        self._sock2 = sock
+        recv = FrameReceiver(sock)
+        recv.frame_ready.connect(lambda f: self._on_frame(f, 2))
+        recv.broken.connect(lambda _r: self._on_cam2_broken(_r))
+        recv.start()
+        self._recv2 = recv
+        if not quiet:
+            self._flash("CAM2 视频通道已连接 %s:%d" % (ip, CAM2_PORT), "ok")
+
+    def _close_cam2(self):
+        recv, self._recv2 = self._recv2, None
+        if recv:
+            try:
+                recv.stop()
+                recv.wait(1500)
+            except Exception:
+                pass
+        sock, self._sock2 = self._sock2, None
+        if sock:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        self._frames[2] = None
+
+    def _on_cam2_broken(self, reason):
+        self._close_cam2()
+        if self._video_cam == 2:
+            self._flash("CAM2 视频通道已断开", "warn")
+
+    def _switch_cam(self):
+        """首页实时画面：在 CAM 1 / CAM 2 之间切换显示源"""
+        self._video_cam = 2 if self._video_cam == 1 else 1
+        self._cam_btn.setText("● CAM 0%d" % self._video_cam)
+        self._last_frame_t = 0.0
+        if self._video_cam == 2 and self._recv2 is None:
+            self.connect_cam2(quiet=True)
+        if not self._video_on:
+            self._flash("已切换到 CAM 0%d" % self._video_cam, "info")
+            return
+        bgr = self._frames.get(self._video_cam)
+        if bgr is not None:
+            self._on_frame(bgr, self._video_cam)
+            self._flash("已切换到 CAM 0%d" % self._video_cam, "info")
+        else:
+            self._video_label.clear()
+            self._video_label.setText("CAM 0%d 无信号（请确认该路模拟器/摄像头已开）" % self._video_cam)
 
     def _on_broken(self, reason):
         if self._connected:
@@ -1664,33 +1806,51 @@ class Dashboard(QWidget):
                 pass
             self._sock = None
 
-    def _on_frame(self, bgr):
-        t = time.time()
-        dt = t - self._last_frame_t
-        self._last_frame_t = t
-        if 0.001 < dt < 1.0:
-            self._fps = 0.7 * self._fps + 0.3 * (1.0 / dt)
-        self._last_frame = bgr
+    def _on_frame(self, bgr, cam=1):
+        """双摄像头帧路由：cam=1 主控 CAM1 / cam=2 CAM2。
+        首页只显示当前选中 CAM；实时监控页 CAM1 左 CAM2 右；自主控制页跟随 CAM1。"""
+        self._frames[cam] = bgr
+        if cam == self._video_cam:
+            t = time.time()
+            dt = t - self._last_frame_t
+            self._last_frame_t = t
+            if 0.001 < dt < 1.0:
+                self._fps = 0.7 * self._fps + 0.3 * (1.0 / dt)
+            self._last_frame = bgr
         if not self._video_on:
             return
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
-        pix = QPixmap.fromImage(img).scaled(
-            self._video_label.width(), self._video_label.height(),
-            Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self._video_label.setPixmap(pix)
-        # 同步到“实时监控”页大图
-        if hasattr(self, "_monitor_video") and self._monitor_video.width() > 0:
+        # 首页实时画面：仅当前选中 CAM
+        if cam == self._video_cam and self._video_label.width() > 0:
+            pix = QPixmap.fromImage(img).scaled(
+                self._video_label.width(), self._video_label.height(),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._video_label.setPixmap(pix)
+        # 实时监控页：CAM1 左 / CAM2 右，各自实时
+        if cam == 1 and hasattr(self, "_monitor_video") and self._monitor_video.width() > 0:
             pix2 = QPixmap.fromImage(img).scaled(
                 self._monitor_video.width(), self._monitor_video.height(),
                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self._monitor_video.setPixmap(pix2)
-        if hasattr(self, "_auto_video") and self._auto_video.width() > 0:
+        if cam == 2 and hasattr(self, "_monitor_video2") and self._monitor_video2.width() > 0:
+            pix2b = QPixmap.fromImage(img).scaled(
+                self._monitor_video2.width(), self._monitor_video2.height(),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._monitor_video2.setPixmap(pix2b)
+        # 自主控制页：CAM1 左画面
+        if cam == 1 and hasattr(self, "_auto_video") and self._auto_video.width() > 0:
             pix3 = QPixmap.fromImage(img).scaled(
                 self._auto_video.width(), self._auto_video.height(),
                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self._auto_video.setPixmap(pix3)
+        # 自主控制页：CAM2 右画面
+        if cam == 2 and hasattr(self, "_auto_video2") and self._auto_video2.width() > 0:
+            pix3b = QPixmap.fromImage(img).scaled(
+                self._auto_video2.width(), self._auto_video2.height(),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._auto_video2.setPixmap(pix3b)
 
     def toggle_video(self):
         if not self._connected:
@@ -1701,8 +1861,9 @@ class Dashboard(QWidget):
             self._btn_video.setText("关闭视频")
             self._flash("视频显示已开启（主控帧流）", "ok")
             self._video_label.setText("等待视频帧...")
-            if self._last_frame is not None:
-                self._on_frame(self._last_frame)
+            bgr = self._frames.get(self._video_cam)
+            if bgr is not None:
+                self._on_frame(bgr, self._video_cam)
         else:
             self._btn_video.setText("打开视频")
             self._video_label.clear()
@@ -1899,6 +2060,25 @@ class Dashboard(QWidget):
         except Exception:
             pass
         super(Dashboard, self).closeEvent(event)
+
+
+_DARK_TABLE_QSS = (
+    "QTableWidget{background:#0b1830;alternate-background-color:#0f2040;"
+    "color:#d7ecff;border:1px solid #27406b;border-radius:8px;"
+    "gridline-color:rgba(90,116,168,55);font-size:16px;"
+    "selection-background-color:transparent;}"
+    "QHeaderView{background:#152642;border:none;}"
+    "QTableWidget::item{padding:5px 6px;border-left:3px solid transparent;}"
+    "QTableWidget::item:hover{background:rgba(49,196,243,24);}"
+    "QTableWidget::item:selected{background:rgba(49,196,243,48);color:#ffffff;"
+    "border-left:3px solid #31C4F3;}"
+    "QHeaderView::section{background:#152642;color:#9fe7ff;border:none;"
+    "border-bottom:1px solid #2a4a7a;border-right:1px solid #203452;"
+    "padding:7px 8px;font-size:15px;font-weight:700;}"
+    "QTableCornerButton::section{background:#152642;border:none;}"
+)
+
+CAM2_PORT = 12346   # 第二路摄像头(CAM2)视频端口：同主控 IP、独立端口（模拟器第二实例/真机从控节点）
 
 
 _ROOT_QSS = """

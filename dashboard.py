@@ -49,6 +49,7 @@ from PySide2.QtWidgets import (
     QSpinBox,
     QSizePolicy,
     QStackedWidget,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -85,6 +86,10 @@ _ZERO = {k: 0.0 for k in SYS}
 # 展会默认“归零/中性”；需跳动演示时打开“动态演示数值”开关
 _ZERO["storage_gb"] = 0.0
 _ZERO["battery"] = 0.0
+
+# 数据管理页 · 遥测记录列（比旧版 6 字段更细：补 电量/舱温/湿度/电机温度）
+_TELE_COLS = ["时间", "深度(m)", "航向(°)", "俯仰(°)", "横滚(°)", "水温(℃)",
+              "电压(V)", "电量(%)", "舱温(℃)", "湿度(%)", "电机(℃)"]
 
 
 class SimTelemetry(object):
@@ -167,7 +172,7 @@ class DepthGauge(QWidget):
         p.setPen(QPen(QColor("#ffd166"), 2))
         p.drawLine(bar_x - 10, int(marker_y), bar_x + bar_w + 2, int(marker_y))
         p.setPen(QColor("#dcefff"))
-        p.setFont(QFont("Consolas", 12, QFont.Bold))
+        p.setFont(QFont("Consolas", 14, QFont.Bold))
         p.drawText(QRectF(bar_x + bar_w + 8, marker_y - 9, 34, 18),
                    Qt.AlignLeft | Qt.AlignVCenter, "%.1f" % self._depth)
         p.end()
@@ -184,8 +189,8 @@ def _panel(title, accent=CYAN):
         "border:1px solid rgba(78,104,158,150);"
         "border-radius:14px;}")
     lay = QVBoxLayout(box)
-    lay.setContentsMargins(14, 10, 14, 12)
-    lay.setSpacing(6)
+    lay.setContentsMargins(12, 8, 12, 10)
+    lay.setSpacing(5)
 
     # 标题行：彩色竖条 + 标题（Fluent 分区头）
     hrow = QHBoxLayout()
@@ -195,7 +200,7 @@ def _panel(title, accent=CYAN):
     bar.setStyleSheet("background:%s; border:none; border-radius:2px;" % accent)
     head = QLabel(title)
     head.setStyleSheet(
-        "color:%s; font-size:14px; font-weight:800; border:none; background:transparent;"
+        "color:%s; font-size:16px; font-weight:800; border:none; background:transparent;"
         "letter-spacing:1px;" % accent)
     hrow.addWidget(bar)
     hrow.addWidget(head, 1)
@@ -208,7 +213,7 @@ def _panel(title, accent=CYAN):
     lay.addWidget(div)
 
     body = QVBoxLayout()
-    body.setSpacing(6)
+    body.setSpacing(5)
     lay.addLayout(body, 1)
     return box, body
 
@@ -216,7 +221,7 @@ def _panel(title, accent=CYAN):
 def _mono(widget, on=True):
     """动态数值统一显式等宽字体（Consolas Bold + 字距），防止刷新抖动"""
     if on:
-        f = QFont("Consolas", 11)
+        f = QFont("Consolas", 13)
         f.setBold(True)
         f.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
         widget.setFont(f)
@@ -245,7 +250,7 @@ def load_icon(name):
 def _kv(label, value="--", color=TXT_SUB, unit="", mono=False, icon=None):
     from PySide2.QtGui import QPixmap
     row = QHBoxLayout()
-    row.setSpacing(8)
+    row.setSpacing(6)
     if icon:
         ico = load_icon(icon)
         lbl_ico = QLabel()
@@ -253,9 +258,9 @@ def _kv(label, value="--", color=TXT_SUB, unit="", mono=False, icon=None):
             lbl_ico.setPixmap(ico.pixmap(20, 20))
         row.addWidget(lbl_ico)
     lab = QLabel(label)
-    lab.setStyleSheet("color:%s; font-size:12px; letter-spacing:0.5px;" % TXT_SUB)
+    lab.setStyleSheet("color:%s; font-size:14px; letter-spacing:0.5px;" % TXT_SUB)
     val = QLabel("%s%s" % (value, unit))
-    val.setStyleSheet("color:%s; font-size:14px; font-weight:800;" % color)
+    val.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % color)
     if mono:
         _mono(val)
     row.addWidget(lab)
@@ -360,8 +365,8 @@ class Dashboard(QWidget):
         # ---- 模块数据（设置/数据记录/日志/曲线）----
         self._recording = True
         self._lively = False    # 展会默认归零；开“动态演示数值”后显示模拟跳动值
-        self._cmd_rows = []     # (time, 指令行, 描述)
-        self._tele_rows = []    # (time, 深度, 航向, 俯仰, 横滚, 水温, 电压)
+        self._cmd_rows = []     # (时间full, 指令类型, 原始指令, 解析说明)
+        self._tele_rows = []    # (时间full, 深, 航, 俯, 横滚, 水温, 电压, 电量, 舱温, 湿度, 电机温)
         self._log_rows = []     # (time, level, text)
         self._curve_buf = {k: [] for k in ("depth", "yaw", "pitch", "roll", "temp")}
 
@@ -393,7 +398,7 @@ class Dashboard(QWidget):
     def _header(self):
         bar = QWidget()
         bar.setObjectName("hdr")
-        bar.setFixedHeight(58)
+        bar.setFixedHeight(60)
         bar.setStyleSheet(
             "QWidget#hdr{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %s,stop:1 %s);"
             "border-bottom:1px solid #27406B;}" % (BG0, BG1))
@@ -402,12 +407,12 @@ class Dashboard(QWidget):
 
         left = QHBoxLayout()
         logo = QLabel("◉")
-        logo.setStyleSheet("color:%s; font-size:24px;" % CYAN)
+        logo.setStyleSheet("color:%s; font-size:28px;" % CYAN)
         brand = QLabel("ROV-SEAEXPLORER")
-        brand.setStyleSheet("color:%s; font-size:15px; font-weight:800;" % TXT)
+        brand.setStyleSheet("color:%s; font-size:17px; font-weight:800;" % TXT)
         self._online_dot = StatusLight("#5b6b80", 12)
         self._online_txt = QLabel("离线")
-        self._online_txt.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+        self._online_txt.setStyleSheet("color:%s; font-size:14px;" % TXT_SUB)
         left.addWidget(logo)
         left.addWidget(brand)
         left.addSpacing(14)
@@ -418,7 +423,7 @@ class Dashboard(QWidget):
         title = QLabel("❮ 水下机器人智能控制系统 ❯")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
-            "color:%s; font-size:19px; font-weight:800; letter-spacing:2px;"
+            "color:%s; font-size:22px; font-weight:800; letter-spacing:2px;"
             "border:none; background:transparent;" % TXT)
         lay.addStretch(1)
         lay.addWidget(title)
@@ -426,12 +431,12 @@ class Dashboard(QWidget):
 
         right = QHBoxLayout()
         self._time_lbl = QLabel("--:--:--")
-        self._time_lbl.setStyleSheet("color:%s; font-size:13px;" % TXT_SUB)
+        self._time_lbl.setStyleSheet("color:%s; font-size:15px;" % TXT_SUB)
         bell = QPushButton("🔔")
         gear = QPushButton("⚙")
         power = QPushButton("⏻")
         for b in (bell, gear, power):
-            b.setFixedSize(32, 32)
+            b.setFixedSize(36, 36)
             b.setObjectName("iconBtn")
             b.setCursor(Qt.PointingHandCursor)
         bell.clicked.connect(lambda: self._flash("通知：无新消息", "info"))
@@ -460,11 +465,11 @@ class Dashboard(QWidget):
             self._logo.setPixmap(pm.scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             self._logo.setText("◉")
-            self._logo.setStyleSheet("color:%s; font-size:22px;" % CYAN)
+            self._logo.setStyleSheet("color:%s; font-size:26px;" % CYAN)
         school.addWidget(self._logo)
         name = QLabel("广州航海学院")
         name.setStyleSheet(
-            "color:%s; font-size:13px; font-weight:800; background:transparent;"
+            "color:%s; font-size:15px; font-weight:800; background:transparent;"
             "border:none;" % TXT)
         school.addWidget(name)
         right.addLayout(school)
@@ -474,7 +479,7 @@ class Dashboard(QWidget):
     # ----- 左侧栏 -----
     def _sidebar(self):
         side = QWidget()
-        side.setFixedWidth(238)
+        side.setFixedWidth(252)
         side.setStyleSheet(
             "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %s,stop:1 %s);"
             "border-right:1px solid #27406B;" % (BG0, BG0))
@@ -487,7 +492,7 @@ class Dashboard(QWidget):
         iprow = QHBoxLayout()
         self._ip = QLineEdit(self.config.robot_ip)
         self._port = QLineEdit(str(self.config.robot_port))
-        self._port.setFixedWidth(62)
+        self._port.setFixedWidth(74)
         iprow.addWidget(self._ip, 1)
         iprow.addWidget(self._port)
         btns = QHBoxLayout()
@@ -506,7 +511,7 @@ class Dashboard(QWidget):
 
         # 导航
         nav_lbl = QLabel("功能导航")
-        nav_lbl.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % TXT_SUB)
+        nav_lbl.setStyleSheet("color:%s; font-size:14px; font-weight:700;" % TXT_SUB)
         lay.addWidget(nav_lbl)
         self._nav_items = []
         nav_def = [("首页概览", 0), ("实时监控", 1), ("任务规划", 2), ("自主控制", 3),
@@ -546,7 +551,7 @@ class Dashboard(QWidget):
                 self._bat_bar = pbar
                 sys_body.addWidget(pbar)
         shield = QLabel("🛡 一切正常")
-        shield.setStyleSheet("color:%s; font-size:14px; font-weight:800;" % GREEN)
+        shield.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % GREEN)
         sys_body.addWidget(shield)
         lay.addWidget(sys_box)
         return side
@@ -578,7 +583,7 @@ class Dashboard(QWidget):
             "border:1px solid #2A3A60;border-radius:10px;}")
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(12)
+        lay.setSpacing(10)
 
         def vsep():
             s = QFrame()
@@ -590,9 +595,9 @@ class Dashboard(QWidget):
             h = QHBoxLayout()
             h.setSpacing(5)
             lb = QLabel(label)
-            lb.setStyleSheet("color:%s;font-size:11px;" % TXT_SUB)
+            lb.setStyleSheet("color:%s;font-size:13px;" % TXT_SUB)
             val = QLabel("--")
-            val.setStyleSheet("color:%s;font-size:13px;font-weight:800;" % color)
+            val.setStyleSheet("color:%s;font-size:15px;font-weight:800;" % color)
             _mono(val)
             h.addWidget(lb)
             h.addWidget(val)
@@ -601,7 +606,7 @@ class Dashboard(QWidget):
         # 连接
         self._tool_dot = StatusLight("#5b6b80", 11)
         self._tool_conn = QLabel("未连接")
-        self._tool_conn.setStyleSheet("color:%s;font-size:12px;font-weight:700;" % TXT_SUB)
+        self._tool_conn.setStyleSheet("color:%s;font-size:14px;font-weight:700;" % TXT_SUB)
         con = QHBoxLayout()
         con.setSpacing(5)
         con.addWidget(self._tool_dot)
@@ -627,7 +632,7 @@ class Dashboard(QWidget):
             tm = QLabel("演示模式")
         else:
             tm = QLabel("展会演示模式")
-        tm.setStyleSheet("color:%s;font-size:11px;" % TXT_SUB)
+        tm.setStyleSheet("color:%s;font-size:13px;" % TXT_SUB)
         lay.addWidget(tm)
         return bar
 
@@ -635,7 +640,7 @@ class Dashboard(QWidget):
         """QGC 式首页：顶部紧凑状态条 + 左侧视频主画面(撑满) + 右侧/底部紧凑卡片(贴内容)"""
         page = QWidget()
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(8)
         outer.addWidget(self._toolbar())
 
@@ -672,7 +677,6 @@ class Dashboard(QWidget):
         bottom.addWidget(self._sensor_box, 1)
         bottom.addWidget(self._alarm_box, 2)
         outer.addLayout(bottom)
-
         self._build_video()
         self._build_equipment()
         self._build_motion()
@@ -687,8 +691,8 @@ class Dashboard(QWidget):
     def _monitor_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setSpacing(10)
         box, body = _panel("实时监控 · 视频与关键数据", CYAN)
         self._monitor_video = QLabel("实时视频（连接 91 后显示）")
         self._monitor_video.setObjectName("video")
@@ -704,12 +708,12 @@ class Dashboard(QWidget):
                                 ("水温", "water_temp", "°C")):
             grp = QVBoxLayout()
             lab = QLabel(name)
-            lab.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+            lab.setStyleSheet("color:%s; font-size:14px;" % TXT_SUB)
             val = QLabel("--")
-            val.setStyleSheet("color:%s; font-size:20px; font-weight:800;" % TXT)
+            val.setStyleSheet("color:%s; font-size:24px; font-weight:800;" % TXT)
             _mono(val)
             unit_l = QLabel(unit)
-            unit_l.setStyleSheet("color:%s; font-size:12px;" % CYAN)
+            unit_l.setStyleSheet("color:%s; font-size:14px;" % CYAN)
             grp.addWidget(lab)
             grp.addWidget(val)
             grp.addWidget(unit_l)
@@ -724,8 +728,8 @@ class Dashboard(QWidget):
     def _mission_page(self):
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(12)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(10)
         box, body = _panel("任务规划 · 航点列表", CYAN)
         self._wp_table = QTableWidget(0, 4)
         self._wp_table.setHorizontalHeaderLabels(["航点", "X(m)", "Y(m)", "动作"])
@@ -809,8 +813,8 @@ class Dashboard(QWidget):
     def _autonomous_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setSpacing(10)
         box, body = _panel("自主控制 · 演示配置", BLUE)
         r = QHBoxLayout()
         r.addWidget(QLabel("控制模式"))
@@ -870,7 +874,7 @@ class Dashboard(QWidget):
             else:
                 value = fmt % _ZERO[key]
             lbl = QLabel(label)
-            lbl.setStyleSheet("color:%s; font-size:13px; font-weight:700;" % TXT_SUB)
+            lbl.setStyleSheet("color:%s; font-size:15px; font-weight:700;" % TXT_SUB)
             # 标签前加小图标
             grp = QWidget()
             gh = QHBoxLayout(grp)
@@ -884,7 +888,7 @@ class Dashboard(QWidget):
             gh.addWidget(lbl)
             gh.addStretch(1)
             val = QLabel(value)
-            val.setStyleSheet("color:%s; font-size:17px; font-weight:800;" % col)
+            val.setStyleSheet("color:%s; font-size:19px; font-weight:800;" % col)
             if fmt is not None:
                 _mono(val)
             row, colc = idx // 2, (idx % 2) * 2
@@ -921,24 +925,24 @@ class Dashboard(QWidget):
     def _sonar_page(self):
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(12)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(10)
         box, body = _panel("声纳探测 · 演示 / 待接入", CYAN)
         top = QHBoxLayout()
         grp1 = QVBoxLayout()
         lab1 = QLabel("探测距离")
-        lab1.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+        lab1.setStyleSheet("color:%s; font-size:14px;" % TXT_SUB)
         self._sonar_dist = QLabel("-- m")
-        self._sonar_dist.setStyleSheet("color:%s; font-size:28px; font-weight:800;" % TXT)
+        self._sonar_dist.setStyleSheet("color:%s; font-size:32px; font-weight:800;" % TXT)
         _mono(self._sonar_dist)
         grp1.addWidget(lab1)
         grp1.addWidget(self._sonar_dist)
         grp2 = QVBoxLayout()
         lab2 = QLabel("目标状态")
-        lab2.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+        lab2.setStyleSheet("color:%s; font-size:14px;" % TXT_SUB)
         self._sonar_target = QLabel("无目标")
         self._sonar_target.setStyleSheet(
-            "color:%s; font-size:20px; font-weight:800;" % TXT_SUB)
+            "color:%s; font-size:24px; font-weight:800;" % TXT_SUB)
         grp2.addWidget(lab2)
         grp2.addWidget(self._sonar_target)
         top.addLayout(grp1)
@@ -971,7 +975,7 @@ class Dashboard(QWidget):
         self._sonar_dist.setText("0.0 m")
         self._sonar_target.setText("无目标")
         self._sonar_target.setStyleSheet(
-            "color:%s; font-size:20px; font-weight:800;" % TXT_SUB)
+            "color:%s; font-size:24px; font-weight:800;" % TXT_SUB)
         if hasattr(self, "_sonar_zero"):
             self._sonar_zero.setData([0, 50], [0, 0])
 
@@ -981,8 +985,8 @@ class Dashboard(QWidget):
     def _settings_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setSpacing(10)
 
         box, body = _panel("系统设置 · 主控连接", CYAN)
         r = QHBoxLayout()
@@ -1085,42 +1089,95 @@ class Dashboard(QWidget):
         self._port.setText("12345")
         self._flash("已恢复默认设置", "ok")
 
-    # ---------------- 数据管理 ----------------
+    # ---------------- 数据管理（指令 / 遥测 分表细化记录） ----------------
     def _data_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
-        box, body = _panel("数据管理 · 指令/遥测记录", CYAN)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setSpacing(10)
+        box, body = _panel("数据管理 · 指令 / 遥测 记录", CYAN)
+
+        # 顶部控制行：记录状态 + 统计 + 操作按钮
         top = QHBoxLayout()
-        self._btn_rec = QPushButton("停止记录" if self._recording else "开始记录")
-        self._btn_rec.setCheckable(True)
-        self._btn_rec.setChecked(self._recording)
-        self._btn_rec.setObjectName("solidBtn")
-        self._btn_rec.toggled.connect(lambda on: self._set_recording(on))
-        btn_export = QPushButton("导出CSV")
+        top.setSpacing(8)
+        self._rec_dot = StatusLight(GREEN if self._recording else "#5b6b80", 12)
+        self._rec_txt = QLabel("记录中" if self._recording else "已暂停")
+        self._rec_txt.setStyleSheet(
+            "color:%s; font-size:15px; font-weight:800;"
+            % (GREEN if self._recording else TXT_SUB))
+        self._stat_rec = QLabel("")
+        self._stat_rec.setStyleSheet("color:%s; font-size:15px;" % TXT_SUB)
+        top.addWidget(self._rec_dot)
+        top.addWidget(self._rec_txt)
+        top.addSpacing(14)
+        top.addWidget(self._stat_rec)
+        top.addStretch(1)
+
+        btn_clear = QPushButton("清空记录")
+        btn_clear.setObjectName("ghostBtn")
+        btn_clear.clicked.connect(self._clear_records)
+        btn_export = QPushButton("导出 CSV")
         btn_export.setObjectName("solidBtn")
         btn_export.clicked.connect(self._export_record)
-        self._stat_rec = QLabel("")
-        self._stat_rec.setStyleSheet("color:%s;" % TXT_SUB)
-        top.addWidget(self._btn_rec)
+        self._btn_rec = QPushButton("停止记录" if self._recording else "开始记录")
+        self._btn_rec.setObjectName("solidBtn")
+        self._btn_rec.setCheckable(True)
+        self._btn_rec.setChecked(self._recording)
+        self._btn_rec.toggled.connect(lambda on: self._set_recording(on))
+        top.addWidget(btn_clear)
         top.addWidget(btn_export)
-        top.addStretch(1)
-        top.addWidget(self._stat_rec)
+        top.addWidget(self._btn_rec)
         body.addLayout(top)
-        self._data_table = QTableWidget(0, 4)
-        self._data_table.setHorizontalHeaderLabels(["时间", "类型", "内容", "描述"])
-        self._data_table.horizontalHeader().setStretchLastSection(True)
-        self._data_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._data_table.setAlternatingRowColors(True)
-        body.addWidget(self._data_table, 1)
+
+        # 分页签：指令记录 / 遥测记录（各自独立字段，比旧版单表更细）
+        tabs = QTabWidget()
+        tabs.setObjectName("dataTabs")
+        self._cmd_table = self._mk_rec_table(["时间", "类型", "原始指令(7字段)", "解析说明"])
+        cw = QWidget()
+        cl = QVBoxLayout(cw)
+        cl.setContentsMargins(6, 8, 6, 8)
+        cl.setSpacing(6)
+        cl.addWidget(self._cmd_table, 1)
+        tabs.addTab(cw, "指令记录")
+        self._tele_table = self._mk_rec_table(list(_TELE_COLS))
+        tw = QWidget()
+        tl = QVBoxLayout(tw)
+        tl.setContentsMargins(6, 8, 6, 8)
+        tl.setSpacing(6)
+        tl.addWidget(self._tele_table, 1)
+        tabs.addTab(tw, "遥测记录")
+        self._data_tabs = tabs
+        body.addWidget(tabs, 1)
+
         grid.addWidget(box, 0, 0)
+        grid.setRowStretch(0, 1)
         self._refresh_data_stats()
+        self._refresh_cmd_table()
+        self._refresh_tele_table()
         return page
+
+    def _mk_rec_table(self, headers):
+        """统一构造只读数据表（深色表头 + 斑马纹 + 不可编辑）"""
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(list(headers))
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        t.setAlternatingRowColors(True)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.setWordWrap(False)
+        return t
 
     def _set_recording(self, on):
         self._recording = on
         self._btn_rec.setText("停止记录" if on else "开始记录")
+        col = GREEN if on else "#5b6b80"
+        if hasattr(self, "_rec_dot"):
+            self._rec_dot.set_color(col)
+            self._rec_txt.setText("记录中" if on else "已暂停")
+            self._rec_txt.setStyleSheet(
+                "color:%s; font-size:15px; font-weight:800;"
+                % (GREEN if on else TXT_SUB))
         self._flash("数据记录 %s" % ("开启" if on else "暂停"), "info")
 
     def _on_lively(self, on):
@@ -1128,39 +1185,128 @@ class Dashboard(QWidget):
         self._tick_ui()
         self._flash("动态演示数值：%s" % ("动态演示" if on else "归零中性"), "info")
 
-    def _append_data_row(self, kind, content, desc):
-        self._data_table.insertRow(0)
-        stamp = datetime.now().strftime("%H:%M:%S")
-        for c, v in enumerate([stamp, kind, content, desc]):
-            self._data_table.setItem(0, c, QTableWidgetItem(str(v)))
-        if self._data_table.rowCount() > 300:
-            self._data_table.removeRow(self._data_table.rowCount() - 1)
+    @staticmethod
+    def _cmd_type_label(line):
+        """从 7 字段指令解析出人读类别（用于记录页分类展示）"""
+        try:
+            d = proto.parse_command(line) or {}
+        except Exception:
+            d = {}
+        t = d.get("type")
+        if t == "disconnect":
+            return "断开连接"
+        mode = str(d.get("mode", ""))
+        if mode == proto.MODE_START:
+            return "启动运行"
+        if mode == proto.MODE_STOP:
+            return "停止待机"
+        return "其他指令" if t is None else str(t)
+
+    def _record_cmd(self, line, desc, typ=None):
+        """指令入库并回填到“数据管理”指令页签（顶部插新行）"""
+        self._cmd_rows.append((datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                               typ or self._cmd_type_label(line), line, desc))
+        if len(self._cmd_rows) > 2000:
+            self._cmd_rows.pop(0)
+        t = getattr(self, "_cmd_table", None)
+        if t is not None:
+            full, k, ln, dc = self._cmd_rows[-1]
+            t.insertRow(0)
+            for c, v in enumerate((full[11:19], k, ln, dc)):
+                t.setItem(0, c, QTableWidgetItem(str(v)))
+            while t.rowCount() > 500:
+                t.removeRow(t.rowCount() - 1)
         self._refresh_data_stats()
+
+    @staticmethod
+    def _tele_display(entry):
+        """遥测条目 → 表格/CSV 展示文本（11 列）"""
+        (full, d, y, p, ro, wt, volt, bat, ct, hu, mt) = entry
+        return [full[11:19], "%.1f" % d, "%.1f" % y, "%.1f" % p, "%.1f" % ro,
+                "%.1f" % wt, "%.1f" % volt, "%.0f" % bat, "%.1f" % ct,
+                "%.0f" % hu, "%.1f" % mt]
+
+    def _append_tele_entry(self, entry):
+        """遥测入库并回填到“数据管理”遥测页签（每秒一条，顶部插新行）"""
+        self._tele_rows.append(entry)
+        if len(self._tele_rows) > 20000:
+            self._tele_rows.pop(0)
+        t = getattr(self, "_tele_table", None)
+        if t is not None:
+            t.insertRow(0)
+            for c, v in enumerate(self._tele_display(entry)):
+                t.setItem(0, c, QTableWidgetItem(v))
+            while t.rowCount() > 1200:
+                t.removeRow(t.rowCount() - 1)
+        self._refresh_data_stats()
+
+    def _refresh_cmd_table(self):
+        t = getattr(self, "_cmd_table", None)
+        if t is None:
+            return
+        rows = self._cmd_rows[-800:]
+        t.setRowCount(0)
+        for full, typ, line, desc in rows:
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, v in enumerate((full[11:19], typ, line, desc)):
+                t.setItem(r, c, QTableWidgetItem(str(v)))
+
+    def _refresh_tele_table(self):
+        t = getattr(self, "_tele_table", None)
+        if t is None:
+            return
+        rows = self._tele_rows[-1200:]
+        t.setRowCount(0)
+        for entry in rows:
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, v in enumerate(self._tele_display(entry)):
+                t.setItem(r, c, QTableWidgetItem(v))
 
     def _refresh_data_stats(self):
         if hasattr(self, "_stat_rec"):
             up = int(time.time() - self._boot)
             self._stat_rec.setText(
-                "指令 %d · 遥测 %d · 时长 %02d:%02d:%02d"
-                % (len(self._cmd_rows), len(self._tele_rows), up // 3600, up // 60 % 60, up % 60))
+                "指令 %d 条 · 遥测 %d 条 · 运行 %02d:%02d:%02d"
+                % (len(self._cmd_rows), len(self._tele_rows),
+                   up // 3600, up // 60 % 60, up % 60))
+
+    def _clear_records(self):
+        self._cmd_rows[:] = []
+        self._tele_rows[:] = []
+        if hasattr(self, "_cmd_table"):
+            self._cmd_table.setRowCount(0)
+        if hasattr(self, "_tele_table"):
+            self._tele_table.setRowCount(0)
+        self._refresh_data_stats()
+        self._flash("已清空指令/遥测记录", "info")
 
     def _export_record(self):
+        """同时导出指令、遥测两份 CSV（UTF-8 BOM，Excel 可直接打开；按时间升序）"""
         os.makedirs(self._shot_dir, exist_ok=True)
-        path = os.path.join(self._shot_dir, datetime.now().strftime("record_%Y%m%d_%H%M%S.csv"))
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("time,kind,content,desc\n")
-            for row in self._cmd_rows:
-                f.write("%s,cmd,%s,%s\n" % row)
-            for row in self._tele_rows:
-                f.write("%s,tele,%s,%s\n" % (row[0], ",".join(map(str, row[1:])), "模拟遥测"))
-        self._flash("已导出记录：%s" % path, "ok")
+        base = datetime.now().strftime("records_%Y%m%d_%H%M%S")
+        p_cmd = os.path.join(self._shot_dir, base + "_cmd.csv")
+        with open(p_cmd, "w", encoding="utf-8-sig") as f:
+            f.write("时间,类型,原始指令(7字段),解析说明\n")
+            for full, typ, line, desc in self._cmd_rows:
+                f.write("%s,%s,%s,%s\n" % (full, typ, line, desc.replace(",", " ")))
+        p_tele = os.path.join(self._shot_dir, base + "_tele.csv")
+        with open(p_tele, "w", encoding="utf-8-sig") as f:
+            f.write(",".join(_TELE_COLS) + "\n")
+            for entry in self._tele_rows:
+                cells = self._tele_display(entry)
+                cells[0] = entry[0]      # CSV 里补全日期
+                f.write(",".join(cells) + "\n")
+        self._flash("已导出指令 %d 条 / 遥测 %d 条：%s 、%s"
+                    % (len(self._cmd_rows), len(self._tele_rows), p_cmd, p_tele), "ok")
 
     # ---------------- 日志信息 ----------------
     def _logs_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setSpacing(10)
         box, body = _panel("日志信息 · 分级筛选", YELLOW)
         top = QHBoxLayout()
         self._f_ok = QCheckBox("正常")
@@ -1228,12 +1374,12 @@ class Dashboard(QWidget):
                                 ("水温", "water_temp", "°C")):
             row = QHBoxLayout()
             lab = QLabel(name)
-            lab.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+            lab.setStyleSheet("color:%s; font-size:14px;" % TXT_SUB)
             val = QLabel("--")
-            val.setStyleSheet("color:%s; font-size:18px; font-weight:800;" % TXT)
+            val.setStyleSheet("color:%s; font-size:21px; font-weight:800;" % TXT)
             _mono(val)
             unit_l = QLabel(unit)
-            unit_l.setStyleSheet("color:%s; font-size:12px;" % CYAN)
+            unit_l.setStyleSheet("color:%s; font-size:14px;" % CYAN)
             row.addWidget(lab)
             row.addWidget(val)
             row.addWidget(unit_l)
@@ -1258,7 +1404,7 @@ class Dashboard(QWidget):
         # 深度指示：自绘仪表（刻度+填充+数值严格对齐）
         depth_col = QVBoxLayout()
         depth_lbl = QLabel("深度指示 (m)")
-        depth_lbl.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % TXT_SUB)
+        depth_lbl.setStyleSheet("color:%s; font-size:14px; font-weight:700;" % TXT_SUB)
         depth_lbl.setAlignment(Qt.AlignLeft)
         self._depth_gauge = DepthGauge()
         depth_col.addWidget(depth_lbl)
@@ -1270,7 +1416,7 @@ class Dashboard(QWidget):
         # 底栏
         bar = QHBoxLayout()
         cam = QLabel("● CAM 01")
-        cam.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % GREEN)
+        cam.setStyleSheet("color:%s; font-size:14px; font-weight:700;" % GREEN)
         bar.addWidget(cam)
         bar.addStretch(1)
         self._btn_video = QPushButton("打开视频")
@@ -1307,12 +1453,12 @@ class Dashboard(QWidget):
         photo = QLabel()
         photo.setObjectName("rovPhoto")
         photo.setAlignment(Qt.AlignCenter)
-        photo.setFixedHeight(172)
+        photo.setFixedHeight(158)
         path = os.path.join(ASSET_DIR, "rov_photo.png")
         if os.path.exists(path):
             pm = QPixmap(path)
             if not pm.isNull():
-                photo.setPixmap(pm.scaledToHeight(140, Qt.SmoothTransformation))
+                photo.setPixmap(pm.scaledToHeight(128, Qt.SmoothTransformation))
         else:
             photo.setText("ROV 示意图（待放置俯视图）")
         photo.setStyleSheet(
@@ -1333,7 +1479,7 @@ class Dashboard(QWidget):
         gl.setContentsMargins(10, 5, 10, 5)
         gl.setSpacing(10)
         title_t = QLabel("推进器")
-        title_t.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % TXT_SUB)
+        title_t.setStyleSheet("color:%s; font-size:14px; font-weight:700;" % TXT_SUB)
         gl.addWidget(title_t)
         self._thr_ind = []
         for tag, name in (("T1", "左"), ("T2", "右")):
@@ -1341,9 +1487,9 @@ class Dashboard(QWidget):
             b.setSpacing(5)
             dot = StatusLight(GREEN, 12)
             tlab = QLabel("%s·%s" % (tag, name))
-            tlab.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % TXT)
+            tlab.setStyleSheet("color:%s; font-size:14px; font-weight:700;" % TXT)
             val = QLabel("0%")
-            val.setStyleSheet("color:%s; font-size:13px; font-weight:800;" % CYAN)
+            val.setStyleSheet("color:%s; font-size:15px; font-weight:800;" % CYAN)
             _mono(val)
             b.addWidget(dot)
             b.addWidget(tlab)
@@ -1406,7 +1552,7 @@ class Dashboard(QWidget):
         col.addWidget(mvbtn("上升", disabled=True, icon="up"))
         self._pct_up = QLabel("0%")
         self._pct_up.setAlignment(Qt.AlignCenter)
-        self._pct_up.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % CYAN)
+        self._pct_up.setStyleSheet("color:%s; font-size:18px; font-weight:800;" % CYAN)
         col.addWidget(self._pct_up)
         col.addWidget(mvbtn("下降", disabled=True, icon="down"))
         col.addStretch(1)
@@ -1418,7 +1564,7 @@ class Dashboard(QWidget):
         mid.addWidget(mvbtn("左转", lambda: self._move("left"), icon="left"), 1, 0)
         self._pct_center = QLabel("0%")
         self._pct_center.setAlignment(Qt.AlignCenter)
-        self._pct_center.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % CYAN)
+        self._pct_center.setStyleSheet("color:%s; font-size:18px; font-weight:800;" % CYAN)
         mid.addWidget(self._pct_center, 1, 1)
         mid.addWidget(mvbtn("右转", lambda: self._move("right"), icon="right"), 1, 2)
         mid.addWidget(mvbtn("后退", lambda: self._move("backward"), icon="down"), 2, 1)
@@ -1431,7 +1577,7 @@ class Dashboard(QWidget):
         colr.addWidget(mvbtn("左移", disabled=True, icon="left"))
         self._pct_side = QLabel("0%")
         self._pct_side.setAlignment(Qt.AlignCenter)
-        self._pct_side.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % CYAN)
+        self._pct_side.setStyleSheet("color:%s; font-size:18px; font-weight:800;" % CYAN)
         colr.addWidget(self._pct_side)
         colr.addWidget(mvbtn("右移", disabled=True, icon="right"))
         colr.addStretch(1)
@@ -1526,16 +1672,16 @@ class Dashboard(QWidget):
             hrow = QHBoxLayout()
             hrow.setSpacing(6)
             hd = QLabel(tag)
-            hd.setStyleSheet("color:%s; font-size:12px; font-weight:800;" % color)
+            hd.setStyleSheet("color:%s; font-size:14px; font-weight:800;" % color)
             nm = QLabel(name)
-            nm.setStyleSheet("color:%s; font-size:11px;" % TXT_SUB)
+            nm.setStyleSheet("color:%s; font-size:13px;" % TXT_SUB)
             hrow.addWidget(hd)
             hrow.addWidget(nm)
             hrow.addStretch(1)
             pwmL = QLabel("PWM")
-            pwmL.setStyleSheet("color:%s; font-size:10px;" % TXT_SUB)
+            pwmL.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
             pwm = QLabel("0")
-            pwm.setStyleSheet("color:%s; font-size:13px; font-weight:800;" % color)
+            pwm.setStyleSheet("color:%s; font-size:15px; font-weight:800;" % color)
             _mono(pwm)
             hrow.addWidget(pwmL)
             hrow.addWidget(pwm)
@@ -1583,9 +1729,7 @@ class Dashboard(QWidget):
             p["brush"], p["brush_speed"], p["light"])
         if self._raw_send(line):
             desc = proto.describe_command(line)
-            self._cmd_rows.append((datetime.now().strftime("%H:%M:%S"), line, desc))
-            if hasattr(self, "_data_table"):
-                self._append_data_row("指令", line, desc)
+            self._record_cmd(line, desc)
             if announce:
                 self._flash(desc, "ok")
             self._sync_bars()
@@ -1761,7 +1905,8 @@ class Dashboard(QWidget):
                           brush="000", brush_speed=0, light=0)
         line = proto.emergency_stop_command()
         self._flash("！！！ 急停（%s）" % line, "err")
-        self._raw_send(line)
+        if self._raw_send(line):
+            self._record_cmd(line, proto.describe_command(line) or "急停", typ="急停")
         self._sync_quick_ui()
 
     def _on_light(self, v):
@@ -1816,12 +1961,12 @@ class Dashboard(QWidget):
         self._online_dot.set_color(GREEN if ok else "#5b6b80")
         self._online_txt.setText("在线" if ok else "离线")
         self._online_txt.setStyleSheet(
-            "color:%s; font-size:12px; font-weight:700;" % (GREEN if ok else TXT_SUB))
+            "color:%s; font-size:14px; font-weight:700;" % (GREEN if ok else TXT_SUB))
         if hasattr(self, "_tool_dot"):
             self._tool_dot.set_color(GREEN if ok else "#5b6b80")
             self._tool_conn.setText("已连接" if ok else "未连接")
             self._tool_conn.setStyleSheet(
-                "color:%s; font-size:12px; font-weight:700;" % (GREEN if ok else TXT_SUB))
+                "color:%s; font-size:14px; font-weight:700;" % (GREEN if ok else TXT_SUB))
 
     def _tick_ui(self):
         now = datetime.now()
@@ -1853,14 +1998,15 @@ class Dashboard(QWidget):
             self._tool_bat.setText("%.0f%%" % v_sys["battery"])
         if self._status_rows:
             self._status_rows[5][1].setText("%.1f °C" % v["motor_temp"])
-        # 遥测记录（缺省归零）
+        # 遥测记录（缺省归零；开“动态演示数值”后可见数值变化，字段比旧版更细）
         if self._recording:
-            self._tele_rows.append((now.strftime("%H:%M:%S"),
-                                    round(v["depth_m"], 1), round(v["yaw_deg"], 1),
-                                    round(v["pitch_deg"], 1), round(v["roll_deg"], 1),
-                                    round(v["water_temp"], 1), round(v["voltage"], 1)))
-            if len(self._tele_rows) > 5000:
-                self._tele_rows.pop(0)
+            self._append_tele_entry((
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                round(v["depth_m"], 1), round(v["yaw_deg"], 1),
+                round(v["pitch_deg"], 1), round(v["roll_deg"], 1),
+                round(v["water_temp"], 1), round(v["voltage"], 1),
+                round(v["battery"], 0), round(v["cabin_temp"], 1),
+                round(v["humidity"], 0), round(v["motor_temp"], 1)))
         self._refresh_data_stats()
         self._update_sonar()
         self._update_auto_data()
@@ -1889,6 +2035,8 @@ class Dashboard(QWidget):
             self._refresh_logs_table()
         elif name == "数据管理":
             self._refresh_data_stats()
+            self._refresh_cmd_table()
+            self._refresh_tele_table()
 
     # =====================================================================
     def closeEvent(self, event):
@@ -1906,90 +2054,125 @@ QWidget#root { background:qlineargradient(x1:0,y1:0,x2:1,y2:1,
     stop:0 %(bg0)s, stop:0.55 %(bg1)s, stop:1 %(bg0)s); }
 QLabel { color:%(sub)s; background:transparent; }
 QLabel[mono="true"] { font-family:"Consolas","Cascadia Mono","Microsoft YaHei UI"; }
-QLabel#video { background:#050b16; border:1px solid #27406b; border-radius:8px;
-    color:#7c93b5; font-size:15px; }
+QLabel#video { background:#050b16; border:1px solid #27406b; border-radius:10px;
+    color:#7c93b5; font-size:17px; }
 
-/* ---- 按钮：暗底亮字，hover 发光，pressed 位移 ---- */
+/* ---- 按钮：暗底亮字，hover 发光，pressed 位移（字号加大、可点区域更舒适）---- */
 QPushButton {
     background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #17325c,stop:1 #10233f);
-    color:#d7ecff; border:1px solid #2f5186; border-radius:7px;
-    padding:5px 10px; font-size:12px;
+    color:#d7ecff; border:1px solid #2f5186; border-radius:8px;
+    padding:6px 12px; font-size:14px; font-weight:600; min-height:22px;
 }
 QPushButton:hover { border-color:%(cyan)s; background:#1c3f70;
     color:#ffffff; }
-QPushButton:pressed { padding-top:6px; padding-left:11px;
+QPushButton:pressed { padding-top:6px; padding-left:13px;
     background:#0c1f38; }
 QPushButton:disabled { color:#4c5c72; border-color:#22334f; }
 
 QPushButton#solidBtn { background:#1b3d63; color:#eaf7ff;
-    border:1px solid %(cyan)s; font-weight:700; min-height:26px; }
+    border:1px solid %(cyan)s; font-weight:800; min-height:33px; padding:5px 18px; }
 QPushButton#solidBtn:hover { background:%(cyan)s; color:#04121f;
     border-color:#8fe4ff; }
-QPushButton#iconBtn { border:none; background:transparent; font-size:18px;
+QPushButton#iconBtn { border:none; background:transparent; font-size:22px;
     color:%(sub)s; border-radius:8px; }
 QPushButton#iconBtn:hover { background:rgba(49,196,243,40); color:#fff; }
 
-QPushButton#navBtn { text-align:left; padding:8px 14px; border-radius:8px;
-    border:none; color:%(sub)s; font-size:13px; }
+QPushButton#navBtn { text-align:left; padding:10px 14px; border-radius:8px;
+    border:none; color:%(sub)s; font-size:15px; }
 QPushButton#navBtn:hover { background:rgba(49,196,243,30); color:#eaf7ff; }
 QPushButton#navBtn:checked { background:rgba(49,196,243,44); color:#ffffff; font-weight:800;
     border-left:4px solid #9fe7ff; }
 
-QPushButton#moveBtn { min-width:58px; min-height:36px; background:#123052;
-    border:1px solid #2b6da3; color:#cfe7ff; border-radius:10px; font-weight:800; }
+QPushButton#moveBtn { min-width:68px; min-height:45px; background:#123052;
+    border:1px solid #2b6da3; color:#cfe7ff; border-radius:11px; font-weight:800;
+    font-size:16px; }
 QPushButton#moveBtn:hover { border-color:#9fe7ff; background:#1c4a7d;
     color:#fff; }
 QPushButton#moveBtn:pressed { background:%(cyan)s; color:#04121f; }
 QPushButton#moveBtn:disabled { background:#101d33; color:#4a5d78;
     border-color:#1c2c47; }
 
-QPushButton#tabOn { border-bottom:2px solid %(cyan)s; color:#fff; background:transparent; }
-QPushButton#tabOff { border:none; background:transparent; color:%(sub)s; }
+QPushButton#tabOn { border-bottom:2px solid %(cyan)s; color:#fff; background:transparent;
+    font-size:15px; font-weight:800; padding:3px 10px; }
+QPushButton#tabOff { border:none; background:transparent; color:%(sub)s;
+    font-size:15px; font-weight:700; padding:3px 10px; }
 QPushButton#ghostBtn { background:rgba(15,30,55,200); border:1px solid #33577f;
-    color:%(sub)s; border-radius:6px; padding:4px 10px; }
+    color:%(sub)s; border-radius:7px; padding:6px 12px; font-size:14px; }
 QPushButton#ghostBtn:hover { border-color:%(cyan)s; color:#fff; }
 QPushButton#ghostBtn:checked { background:rgba(49,196,243,80); color:#fff; }
 
-/* ---- 输入 / 进度条 / 滑动条 / 复选框 / 日志 ---- */
+/* ---- 输入 / 下拉 / 进度条 / 滑动条 / 复选框 / 日志 ---- */
 QLineEdit { background:#0c1830; color:#fff; border:1px solid #2a4a7a;
-    border-radius:6px; padding:4px 8px; }
+    border-radius:6px; padding:5px 9px; font-size:15px; }
 QLineEdit:focus { border-color:%(cyan)s; }
 
-QProgressBar { background:#0b1730; border:1px solid #23436e; border-radius:4px;
+QSpinBox, QComboBox { background:#0c1830; color:#fff; border:1px solid #2a4a7a;
+    border-radius:6px; padding:3px 8px; font-size:15px; min-height:22px; }
+QSpinBox:focus, QComboBox:focus { border-color:%(cyan)s; }
+QComboBox::drop-down { border:none; width:22px; }
+QComboBox QAbstractItemView { background:#101d36; color:#fff;
+    selection-background-color:#1c3f70; border:1px solid #2a4a7a; }
+
+QProgressBar { background:#0b1730; border:1px solid #23436e; border-radius:5px;
     text-align:center; }
-QProgressBar::chunk { border-radius:3px; }
+QProgressBar::chunk { border-radius:4px; }
 QProgressBar#batBar::chunk {
     background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #1f9a5f,stop:1 %(green)s); }
-QProgressBar#depthBar::chunk { border-radius:2px; }
-QProgressBar#depthBar { border:1px solid rgba(49,196,243,140); border-radius:5px;
-    background:rgba(6,14,28,220); }
 QProgressBar#depthBar::chunk { border-radius:3px; }
+QProgressBar#depthBar { border:1px solid rgba(49,196,243,140); border-radius:6px;
+    background:rgba(6,14,28,220); }
+QProgressBar#depthBar::chunk { border-radius:4px; }
 
-QCheckBox { color:#d7ecff; spacing:6px; }
-QCheckBox::indicator { width:15px; height:15px; border-radius:4px;
+QCheckBox { color:#d7ecff; spacing:7px; font-size:15px; }
+QCheckBox::indicator { width:17px; height:17px; border-radius:5px;
     border:1px solid #2f5186; background:#0c1830; }
+QCheckBox::indicator:hover { border-color:%(cyan)s; }
 QCheckBox::indicator:checked { background:%(cyan)s; border-color:%(cyan)s; }
 
 QTextBrowser#alarm { background:rgba(8,16,32,200);
-    border:1px solid #22395e; border-radius:8px;
-    color:#cfe4ff; font-size:12px; padding:4px; }
+    border:1px solid #22395e; border-radius:9px;
+    color:#cfe4ff; font-size:14px; padding:5px; }
 
-QSlider::groove:horizontal { height:6px; background:#14233f; border-radius:3px; }
-QSlider::handle:horizontal { width:16px; margin:-6px 0; border-radius:8px;
+QSlider::groove:horizontal { height:7px; background:#14233f; border-radius:4px; }
+QSlider::handle:horizontal { width:19px; margin:-7px 0; border-radius:10px;
     background:%(cyan)s; border:1px solid #bdeaff; }
-QSlider::sub-page:horizontal { background:rgba(49,196,243,120); border-radius:3px; }
+QSlider::sub-page:horizontal { background:rgba(49,196,243,130); border-radius:4px; }
+
+/* ---- 数据表格：紧凑行高 + 深色表头 ---- */
+QTableWidget { background:#0a1428; alternate-background-color:#0e1c38;
+    border:1px solid #22395e; border-radius:9px; gridline-color:#1b2c4d;
+    color:#d7ecff; font-size:14px; }
+QTableWidget::item { padding:3px 6px; }
+QTableWidget::item:selected { background:rgba(49,196,243,70); color:#ffffff; }
+QHeaderView::section { background:#13223f; color:#9fc3e8; border:none;
+    border-bottom:1px solid #2a4a7a; border-right:1px solid #1c3050;
+    padding:7px 8px; font-size:14px; font-weight:800; }
+QTableCornerButton::section { background:#13223f; border:none; }
+
+/* ---- 数据管理页分页签 ---- */
+QTabWidget::pane { border:1px solid #22395e; border-radius:9px; background:#0a1428; }
+QTabBar::tab { background:#10203d; color:#8fa9c9; padding:8px 22px;
+    margin-right:3px; font-size:15px; font-weight:700;
+    border:1px solid #22395e; border-bottom:none;
+    border-top-left-radius:8px; border-top-right-radius:8px; }
+QTabBar::tab:selected { background:#1b3d63; color:#ffffff; border-color:%(cyan)s; }
+QTabBar::tab:hover:!selected { background:#17325c; color:#d7ecff; }
 """ % {"bg0": BG0, "bg1": BG1, "cyan": CYAN, "green": GREEN, "sub": TXT_SUB}
 
 
 def main():
+    # 高分屏自动缩放（含 QSS 字号一起放大），须在 QApplication 创建前设置；
+    # 普通 96dpi 屏幕不受影响。
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    # 全局无衬线字体；数字走等宽（见 mono 属性 QSS）
-    app.setFont(QFont("Microsoft YaHei UI", 10))
+    # 全局无衬线字体（放大到 11pt，避免界面文字偏小）；数字走等宽（见 mono 属性 QSS）
+    app.setFont(QFont("Microsoft YaHei UI", 11))
     w = Dashboard()
     w.setWindowTitle("智能水下清洁机器人控制系统 V1.0 · 监控大屏")
     w.resize(1600, 940)
-    w.show()
+    w.showMaximized()   # 大屏展示默认铺满屏幕，避免控件显得偏小
     sys.exit(app.exec_())
 
 

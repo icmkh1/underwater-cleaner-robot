@@ -138,7 +138,7 @@ class DepthGauge(QWidget):
         # 轨道区（右侧 40px）
         bar_x = w - 40
         bar_w = 22
-        top, bottom = 8, h - 20
+        top, bottom = 8, h - 8
         # 轨道
         p.setPen(Qt.NoPen)
         p.setBrush(QColor("#0a1428"))
@@ -156,9 +156,9 @@ class DepthGauge(QWidget):
             p.setBrush(grad)
             p.setPen(Qt.NoPen)
             p.drawRoundedRect(QRectF(bar_x, bottom - fill_h, bar_w, fill_h), 5, 5)
-        # 刻度线 + 数值标签（0/10/20/30/40/50）
+        # 刻度线 + 数值标签（0/5/10/15/20/25/30/35/40/45/50）
         p.setPen(QColor("#5b7a99"))
-        for m in (0, 10, 20, 30, 40, 50):
+        for m in range(0, 51, 5):
             yy = bottom - (bottom - top) * (m / 50.0)
             p.drawLine(bar_x - 8, int(yy), bar_x - 2, int(yy))
             p.drawText(QRectF(0, yy - 7, 20, 14), Qt.AlignRight | Qt.AlignVCenter, str(m))
@@ -184,8 +184,8 @@ def _panel(title, accent=CYAN):
         "border:1px solid rgba(78,104,158,150);"
         "border-radius:14px;}")
     lay = QVBoxLayout(box)
-    lay.setContentsMargins(14, 10, 14, 12)
-    lay.setSpacing(6)
+    lay.setContentsMargins(10, 8, 10, 8)
+    lay.setSpacing(4)
 
     # 标题行：彩色竖条 + 标题（Fluent 分区头）
     hrow = QHBoxLayout()
@@ -208,7 +208,7 @@ def _panel(title, accent=CYAN):
     lay.addWidget(div)
 
     body = QVBoxLayout()
-    body.setSpacing(6)
+    body.setSpacing(4)
     lay.addLayout(body, 1)
     return box, body
 
@@ -242,7 +242,7 @@ def load_icon(name):
     return icon
 
 
-def _kv(label, value="--", color=TXT_SUB, unit="", mono=False, icon=None):
+def _kv(label, value="--", color=TXT_SUB, unit="", mono=False, icon=None, lab_size=12, val_size=14, icon_size=20, lab_bold=False):
     from PySide2.QtGui import QPixmap
     row = QHBoxLayout()
     row.setSpacing(8)
@@ -250,12 +250,13 @@ def _kv(label, value="--", color=TXT_SUB, unit="", mono=False, icon=None):
         ico = load_icon(icon)
         lbl_ico = QLabel()
         if ico is not None:
-            lbl_ico.setPixmap(ico.pixmap(20, 20))
+            lbl_ico.setPixmap(ico.pixmap(icon_size, icon_size))
         row.addWidget(lbl_ico)
     lab = QLabel(label)
-    lab.setStyleSheet("color:%s; font-size:12px; letter-spacing:0.5px;" % TXT_SUB)
+    _fw = "700" if lab_bold else "400"
+    lab.setStyleSheet("color:%s; font-size:%dpx; letter-spacing:0.5px; font-weight:%s;" % (TXT_SUB, lab_size, _fw))
     val = QLabel("%s%s" % (value, unit))
-    val.setStyleSheet("color:%s; font-size:14px; font-weight:800;" % color)
+    val.setStyleSheet("color:%s; font-size:%dpx; font-weight:800;" % (color, val_size))
     if mono:
         _mono(val)
     row.addWidget(lab)
@@ -393,7 +394,7 @@ class Dashboard(QWidget):
     def _header(self):
         bar = QWidget()
         bar.setObjectName("hdr")
-        bar.setFixedHeight(58)
+        bar.setFixedHeight(50)
         bar.setStyleSheet(
             "QWidget#hdr{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %s,stop:1 %s);"
             "border-bottom:1px solid #27406B;}" % (BG0, BG1))
@@ -474,12 +475,12 @@ class Dashboard(QWidget):
     # ----- 左侧栏 -----
     def _sidebar(self):
         side = QWidget()
-        side.setFixedWidth(238)
+        side.setFixedWidth(220)
         side.setStyleSheet(
             "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %s,stop:1 %s);"
             "border-right:1px solid #27406B;" % (BG0, BG0))
         lay = QVBoxLayout(side)
-        lay.setContentsMargins(10, 12, 10, 12)
+        lay.setContentsMargins(10, 12, 10, 6)
         lay.setSpacing(8)
 
         # 连接卡
@@ -488,6 +489,10 @@ class Dashboard(QWidget):
         self._ip = QLineEdit(self.config.robot_ip)
         self._port = QLineEdit(str(self.config.robot_port))
         self._port.setFixedWidth(62)
+        # 连接框数字单独缩小，避免大字号下被裁切
+        _small = QFont("Microsoft YaHei UI", 9)
+        self._ip.setFont(_small)
+        self._port.setFont(_small)
         iprow.addWidget(self._ip, 1)
         iprow.addWidget(self._port)
         btns = QHBoxLayout()
@@ -506,7 +511,7 @@ class Dashboard(QWidget):
 
         # 导航
         nav_lbl = QLabel("功能导航")
-        nav_lbl.setStyleSheet("color:%s; font-size:12px; font-weight:700;" % TXT_SUB)
+        nav_lbl.setStyleSheet("color:%s; font-size:17px; font-weight:700;" % TXT_SUB)
         lay.addWidget(nav_lbl)
         self._nav_items = []
         nav_def = [("首页概览", 0), ("实时监控", 1), ("任务规划", 2), ("自主控制", 3),
@@ -520,10 +525,11 @@ class Dashboard(QWidget):
             lay.addWidget(b)
             self._nav_items.append(b)
         self._nav_items[0].setChecked(True)
-        lay.addStretch(1)
 
-        # 系统状态面板
+        # 系统状态面板（垂直拉伸填满侧边栏底部，拔高对齐右侧面板）
         sys_box, sys_body = _panel("系统状态", GREEN)
+        sys_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        sys_body.setSpacing(8)
         rows = [
             ("电源电压", "voltage", "%.1f V", TXT, "volt"),
             ("剩余电量", "battery", "%.0f%%", GREEN, "battery"),
@@ -533,20 +539,21 @@ class Dashboard(QWidget):
         ]
         self._sys_rows = []
         for label, key, fmt, col, icon in rows:
-            r, v = _kv(label, fmt % (_ZERO[key]), col, mono=True, icon=icon)
+            r, v = _kv(label, fmt % (_ZERO[key]), col, mono=True, icon=icon,
+                       lab_size=16, val_size=20, icon_size=26)
             sys_body.addLayout(r)
             self._sys_rows.append((v, key, fmt, col))
             if label == "剩余电量":
                 pbar = QProgressBar()
                 pbar.setRange(0, 100)
                 pbar.setValue(0)
-                pbar.setFixedHeight(10)
+                pbar.setFixedHeight(14)
                 pbar.setObjectName("batBar")
                 pbar.setTextVisible(False)   # 隐藏条内文字，避免遮挡（电量值由右侧标签显示）
                 self._bat_bar = pbar
                 sys_body.addWidget(pbar)
         shield = QLabel("🛡 一切正常")
-        shield.setStyleSheet("color:%s; font-size:14px; font-weight:800;" % GREEN)
+        shield.setStyleSheet("color:%s; font-size:16px; font-weight:800;" % GREEN)
         sys_body.addWidget(shield)
         lay.addWidget(sys_box)
         return side
@@ -577,8 +584,8 @@ class Dashboard(QWidget):
             "QWidget#toolbar{background:rgba(20,33,61,235);"
             "border:1px solid #2A3A60;border-radius:10px;}")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(12, 6, 12, 6)
-        lay.setSpacing(12)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(10)
 
         def vsep():
             s = QFrame()
@@ -635,8 +642,8 @@ class Dashboard(QWidget):
         """QGC 式首页：顶部紧凑状态条 + 左侧视频主画面(撑满) + 右侧/底部紧凑卡片(贴内容)"""
         page = QWidget()
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(12, 8, 12, 8)
-        outer.setSpacing(8)
+        outer.setContentsMargins(10, 6, 10, 6)
+        outer.setSpacing(6)
         outer.addWidget(self._toolbar())
 
         self._video_box, self._video_body = _panel("实时画面 · CAM 01", CYAN)
@@ -664,10 +671,10 @@ class Dashboard(QWidget):
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         for b in (self._task_box, self._sensor_box, self._alarm_box):
-            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self._task_box.setMinimumHeight(150)
-        self._sensor_box.setMinimumHeight(150)
-        self._alarm_box.setMinimumHeight(150)
+            b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self._task_box.setMinimumHeight(132)
+        self._sensor_box.setMinimumHeight(132)
+        self._alarm_box.setMinimumHeight(132)
         bottom.addWidget(self._task_box, 1)
         bottom.addWidget(self._sensor_box, 1)
         bottom.addWidget(self._alarm_box, 2)
@@ -687,8 +694,8 @@ class Dashboard(QWidget):
     def _monitor_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setSpacing(10)
         box, body = _panel("实时监控 · 视频与关键数据", CYAN)
         self._monitor_video = QLabel("实时视频（连接 91 后显示）")
         self._monitor_video.setObjectName("video")
@@ -724,8 +731,8 @@ class Dashboard(QWidget):
     def _mission_page(self):
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(12)
+        lay.setContentsMargins(10, 6, 10 , 6)
+        lay.setSpacing(10)
         box, body = _panel("任务规划 · 航点列表", CYAN)
         self._wp_table = QTableWidget(0, 4)
         self._wp_table.setHorizontalHeaderLabels(["航点", "X(m)", "Y(m)", "动作"])
@@ -809,8 +816,8 @@ class Dashboard(QWidget):
     def _autonomous_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setSpacing(10)
         box, body = _panel("自主控制 · 演示配置", BLUE)
         r = QHBoxLayout()
         r.addWidget(QLabel("控制模式"))
@@ -921,8 +928,8 @@ class Dashboard(QWidget):
     def _sonar_page(self):
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(12)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(10)
         box, body = _panel("声纳探测 · 演示 / 待接入", CYAN)
         top = QHBoxLayout()
         grp1 = QVBoxLayout()
@@ -981,8 +988,8 @@ class Dashboard(QWidget):
     def _settings_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setSpacing(10)
 
         box, body = _panel("系统设置 · 主控连接", CYAN)
         r = QHBoxLayout()
@@ -1089,8 +1096,8 @@ class Dashboard(QWidget):
     def _data_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setSpacing(10)
         box, body = _panel("数据管理 · 指令/遥测记录", CYAN)
         top = QHBoxLayout()
         self._btn_rec = QPushButton("停止记录" if self._recording else "开始记录")
@@ -1159,8 +1166,8 @@ class Dashboard(QWidget):
     def _logs_page(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(12, 8, 12, 8)
-        grid.setSpacing(12)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setSpacing(10)
         box, body = _panel("日志信息 · 分级筛选", YELLOW)
         top = QHBoxLayout()
         self._f_ok = QCheckBox("正常")
@@ -1250,9 +1257,9 @@ class Dashboard(QWidget):
         self._video_label = QLabel("未连接视频（连接 主控后自动显示）")
         self._video_label.setObjectName("video")
         self._video_label.setAlignment(Qt.AlignCenter)
-        self._video_label.setMinimumSize(560, 300)
+        self._video_label.setMinimumSize(560, 280)
         self._video_label.setScaledContents(False)
-        self._video_label.setMinimumHeight(300)
+        self._video_label.setMinimumHeight(280)
         vrow.addWidget(self._video_label, 1)
 
         # 深度指示：自绘仪表（刻度+填充+数值严格对齐）
@@ -1262,7 +1269,7 @@ class Dashboard(QWidget):
         depth_lbl.setAlignment(Qt.AlignLeft)
         self._depth_gauge = DepthGauge()
         depth_col.addWidget(depth_lbl)
-        depth_col.addWidget(self._depth_gauge, 1)
+        depth_col.addWidget(self._depth_gauge, 5)
         depth_col.addStretch(1)
         vrow.addLayout(depth_col)
         body.addLayout(vrow, 1)
@@ -1307,7 +1314,7 @@ class Dashboard(QWidget):
         photo = QLabel()
         photo.setObjectName("rovPhoto")
         photo.setAlignment(Qt.AlignCenter)
-        photo.setFixedHeight(172)
+        photo.setFixedHeight(152)
         path = os.path.join(ASSET_DIR, "rov_photo.png")
         if os.path.exists(path):
             pm = QPixmap(path)
@@ -1362,7 +1369,7 @@ class Dashboard(QWidget):
         ]
         self._status_rows = []
         for label, value, color in rows:
-            rr, val = _kv(label, value, color)
+            rr, val = _kv(label, value, color, lab_size=14, val_size=16, lab_bold=True)
             body.addLayout(rr)
             self._status_rows.append((label, val))
         body.addStretch(1)
@@ -1447,6 +1454,7 @@ class Dashboard(QWidget):
         self._btn_e = QPushButton("⛔ 急停")
         for b in (self._btn_start, self._btn_stop, self._btn_e):
             b.setObjectName("solidBtn")
+            b.setStyleSheet("font-size:18px; min-height:38px;")
         self._btn_start.clicked.connect(self.start_run)
         self._btn_stop.clicked.connect(self.stop_idle)
         self._btn_e.clicked.connect(self.emergency)
@@ -1481,12 +1489,13 @@ class Dashboard(QWidget):
 
     def _build_task(self):
         body = self._task_body
+        body.setSpacing(18)
         vals = [
             ("任务名称", "无"), ("任务编号", "无"),
             ("任务时长", "00:00:00"), ("已完成航点", "0 / 0"),
         ]
         for k, v in vals:
-            r, _ = _kv(k, v, TXT)
+            r, _ = _kv(k, v, TXT, lab_size=16, val_size=19)
             body.addLayout(r)
         body.addStretch(1)
 
@@ -1505,10 +1514,12 @@ class Dashboard(QWidget):
             if fmt is None:
                 val_txt = "%.1f/%.1f/%.0f" % (_ZERO["roll_deg"], _ZERO["pitch_deg"], _ZERO["yaw_deg"])
                 f = lambda v: "%.1f/%.1f/%.0f" % (v["roll_deg"], v["pitch_deg"], v["yaw_deg"])
-                r, val = _kv(label, val_txt, TXT, mono=True, icon=icon)
+                r, val = _kv(label, val_txt, TXT, mono=True, icon=icon,
+                             lab_size=16, val_size=19, icon_size=24)
                 self._sensor_vals.append((label, val, "att", f))
             else:
-                r, val = _kv(label, fmt % _ZERO[key], TXT, mono=True, icon=icon)
+                r, val = _kv(label, fmt % _ZERO[key], TXT, mono=True, icon=icon,
+                             lab_size=16, val_size=19, icon_size=24)
                 self._sensor_vals.append((label, val, key, (lambda k=key, f=fmt: (lambda v: f % v[k]))()))
             body.addLayout(r)
         body.addStretch(1)
@@ -1922,20 +1933,20 @@ QPushButton:pressed { padding-top:6px; padding-left:11px;
 QPushButton:disabled { color:#4c5c72; border-color:#22334f; }
 
 QPushButton#solidBtn { background:#1b3d63; color:#eaf7ff;
-    border:1px solid %(cyan)s; font-weight:700; min-height:26px; }
+    border:1px solid %(cyan)s; font-weight:700; min-height:24px; }
 QPushButton#solidBtn:hover { background:%(cyan)s; color:#04121f;
     border-color:#8fe4ff; }
 QPushButton#iconBtn { border:none; background:transparent; font-size:18px;
     color:%(sub)s; border-radius:8px; }
 QPushButton#iconBtn:hover { background:rgba(49,196,243,40); color:#fff; }
 
-QPushButton#navBtn { text-align:left; padding:8px 14px; border-radius:8px;
-    border:none; color:%(sub)s; font-size:13px; }
+QPushButton#navBtn { text-align:left; padding:11px 12px; border-radius:6px;
+    border:none; color:%(sub)s; font-size:18px; }
 QPushButton#navBtn:hover { background:rgba(49,196,243,30); color:#eaf7ff; }
 QPushButton#navBtn:checked { background:rgba(49,196,243,44); color:#ffffff; font-weight:800;
     border-left:4px solid #9fe7ff; }
 
-QPushButton#moveBtn { min-width:58px; min-height:36px; background:#123052;
+QPushButton#moveBtn { min-width:52px; min-height:32px; background:#123052;
     border:1px solid #2b6da3; color:#cfe7ff; border-radius:10px; font-weight:800; }
 QPushButton#moveBtn:hover { border-color:#9fe7ff; background:#1c4a7d;
     color:#fff; }
@@ -1943,8 +1954,8 @@ QPushButton#moveBtn:pressed { background:%(cyan)s; color:#04121f; }
 QPushButton#moveBtn:disabled { background:#101d33; color:#4a5d78;
     border-color:#1c2c47; }
 
-QPushButton#tabOn { border-bottom:2px solid %(cyan)s; color:#fff; background:transparent; }
-QPushButton#tabOff { border:none; background:transparent; color:%(sub)s; }
+QPushButton#tabOn { border-bottom:2px solid %(cyan)s; color:#fff; background:transparent; padding:4px 10px; }
+QPushButton#tabOff { border:1px solid #33577f; border-radius:6px; background:transparent; color:%(sub)s; padding:4px 10px; }
 QPushButton#ghostBtn { background:rgba(15,30,55,200); border:1px solid #33577f;
     color:%(sub)s; border-radius:6px; padding:4px 10px; }
 QPushButton#ghostBtn:hover { border-color:%(cyan)s; color:#fff; }
@@ -1952,7 +1963,7 @@ QPushButton#ghostBtn:checked { background:rgba(49,196,243,80); color:#fff; }
 
 /* ---- 输入 / 进度条 / 滑动条 / 复选框 / 日志 ---- */
 QLineEdit { background:#0c1830; color:#fff; border:1px solid #2a4a7a;
-    border-radius:6px; padding:4px 8px; }
+    border-radius:6px; padding:4px 5px; }
 QLineEdit:focus { border-color:%(cyan)s; }
 
 QProgressBar { background:#0b1730; border:1px solid #23436e; border-radius:4px;

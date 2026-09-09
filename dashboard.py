@@ -52,6 +52,7 @@ from PySide2.QtWidgets import (
     QSpinBox,
     QSizePolicy,
     QStackedWidget,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -88,6 +89,10 @@ _ZERO = {k: 0.0 for k in SYS}
 # 展会默认“归零/中性”；需跳动演示时打开“动态演示数值”开关
 _ZERO["storage_gb"] = 0.0
 _ZERO["battery"] = 0.0
+
+# 数据管理页 · 遥测记录列（比旧版更细：补 电量/舱温/湿度/电机温度）
+_TELE_COLS = ["时间", "深度(m)", "航向(°)", "俯仰(°)", "横滚(°)", "水温(℃)",
+              "电压(V)", "电量(%)", "舱温(℃)", "湿度(%)", "电机(℃)"]
 
 CAM2_PORT = 12346   # 第二路摄像头(CAM2)视频端口：同主控 IP、独立端口（真机从控/第二路模拟器）
 
@@ -1767,48 +1772,60 @@ class Dashboard(QWidget):
         grid.setContentsMargins(10, 6, 10, 6)
         grid.setSpacing(10)
         box, body = _panel("数据管理 · 指令/遥测记录", CYAN)
+
+        # 顶部工具行
         top = QHBoxLayout()
         self._btn_rec = QPushButton("停止记录" if self._recording else "开始记录")
         self._btn_rec.setCheckable(True)
         self._btn_rec.setChecked(self._recording)
         self._btn_rec.setObjectName("solidBtn")
         self._btn_rec.toggled.connect(lambda on: self._set_recording(on))
-        btn_export = QPushButton("导出CSV")
-        btn_export.setObjectName("solidBtn")
-        btn_export.clicked.connect(self._export_record)
+        btn_exp = QPushButton("导出CSV")
+        btn_exp.setObjectName("solidBtn")
+        btn_exp.clicked.connect(self._export_record)
+        btn_clear = QPushButton("清空记录")
+        btn_clear.setObjectName("ghostBtn")
+        btn_clear.clicked.connect(self._clear_records)
         self._stat_rec = QLabel("")
         self._stat_rec.setStyleSheet("color:%s;" % TXT_SUB)
         top.addWidget(self._btn_rec)
-        top.addWidget(btn_export)
+        top.addWidget(btn_exp)
+        top.addWidget(btn_clear)
         top.addStretch(1)
         top.addWidget(self._stat_rec)
         body.addLayout(top)
 
-        # 筛选行：类型 + 关键字搜索 + 清空
+        # 搜索（针对内容关键字）
         filt = QHBoxLayout()
         filt.setSpacing(10)
-        filt.addWidget(QLabel("类型"))
-        self._data_type = QComboBox()
-        self._data_type.addItems(["全部", "指令", "遥测"])
-        self._data_type.currentIndexChanged.connect(self._apply_data_filter)
-        filt.addWidget(self._data_type)
         filt.addWidget(QLabel("搜索"))
         self._data_search = QLineEdit()
-        self._data_search.setPlaceholderText("按内容关键字过滤…")
+        self._data_search.setPlaceholderText("按指令/遥测内容关键字过滤…")
         self._data_search.textChanged.connect(self._apply_data_filter)
         filt.addWidget(self._data_search, 1)
-        btn_clear = QPushButton("清空记录")
-        btn_clear.setObjectName("ghostBtn")
-        btn_clear.clicked.connect(self._clear_records)
-        filt.addWidget(btn_clear)
         body.addLayout(filt)
 
-        self._data_table = QTableWidget(0, 4)
-        self._data_table.setHorizontalHeaderLabels(["时间", "类型", "内容", "描述"])
-        self._data_table.horizontalHeader().setStretchLastSection(True)
-        self._data_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._data_table.setAlternatingRowColors(True)
-        body.addWidget(self._data_table, 1)
+        # 页签：指令 / 遥测（11 字段）
+        self._data_tabs = QTabWidget()
+        self._data_tabs.setStyleSheet(
+            "QTabWidget::pane{border:1px solid #22395e;border-radius:8px;background:#0b1830;}"
+            "QTabBar::tab{background:#122a4c;color:%s;padding:6px 16px;border:1px solid #22395e;"
+            "border-bottom:none;border-top-left-radius:8px;border-top-right-radius:8px;}"
+            "QTabBar::tab:selected{background:#1b3d63;color:#ffffff;border-color:%s;}"
+            "QTabBar::tab:hover:!selected{background:#17325c;color:#d7ecff;}" % (TXT_SUB, CYAN))
+        self._cmd_table = QTableWidget(0, 3)
+        self._cmd_table.setHorizontalHeaderLabels(["时间", "内容", "描述"])
+        self._cmd_table.horizontalHeader().setStretchLastSection(True)
+        self._cmd_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._cmd_table.setAlternatingRowColors(True)
+        self._data_tabs.addTab(self._cmd_table, "指令记录")
+        self._tele_table = QTableWidget(0, len(_TELE_COLS))
+        self._tele_table.setHorizontalHeaderLabels(_TELE_COLS)
+        self._tele_table.horizontalHeader().setStretchLastSection(True)
+        self._tele_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._tele_table.setAlternatingRowColors(True)
+        self._data_tabs.addTab(self._tele_table, "遥测记录")
+        body.addWidget(self._data_tabs, 1)
         grid.addWidget(box, 0, 0)
         self._apply_data_filter()
         return page
@@ -1820,24 +1837,28 @@ class Dashboard(QWidget):
         self._flash("已清空指令/遥测记录", "info")
 
     def _apply_data_filter(self):
-        if not hasattr(self, "_data_table"):
+        if not hasattr(self, "_cmd_table"):
             return
-        ftype = self._data_type.currentText()
         search = self._data_search.text().strip().lower()
-        rows = []
-        for (ts, line, desc) in self._cmd_rows:
-            if ftype in ("全部", "指令") and (not search or search in (line + " " + desc).lower()):
-                rows.append((ts, "指令", line, desc))
-        for row in self._tele_rows:
+        # 指令表（3 列）
+        self._cmd_table.setRowCount(0)
+        for (ts, line, desc) in reversed(self._cmd_rows[:300]):
+            if search and search not in (line + " " + desc).lower():
+                continue
+            r = self._cmd_table.rowCount()
+            self._cmd_table.insertRow(r)
+            for c, v in enumerate([ts, line, desc]):
+                self._cmd_table.setItem(r, c, QTableWidgetItem(str(v)))
+        # 遥测表（11 字段）
+        self._tele_table.setRowCount(0)
+        for row in reversed(self._tele_rows[:300]):
             content = ",".join(map(str, row[1:]))
-            if ftype in ("全部", "遥测") and (not search or search in content.lower()):
-                rows.append((row[0], "遥测", content, "遥测记录"))
-        rows = rows[::-1][:300]
-        self._data_table.setRowCount(0)
-        for i, (ts, kind, content, desc) in enumerate(rows):
-            self._data_table.insertRow(i)
-            for c, v in enumerate([ts, kind, content, desc]):
-                self._data_table.setItem(i, c, QTableWidgetItem(str(v)))
+            if search and search not in content.lower():
+                continue
+            r = self._tele_table.rowCount()
+            self._tele_table.insertRow(r)
+            for c, v in enumerate(row):
+                self._tele_table.setItem(r, c, QTableWidgetItem(str(v)))
         self._refresh_data_stats()
 
     def _set_recording(self, on):
@@ -1862,14 +1883,20 @@ class Dashboard(QWidget):
 
     def _export_record(self):
         os.makedirs(self._shot_dir, exist_ok=True)
-        path = os.path.join(self._shot_dir, datetime.now().strftime("record_%Y%m%d_%H%M%S.csv"))
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("time,kind,content,desc\n")
-            for row in self._cmd_rows:
-                f.write("%s,cmd,%s,%s\n" % row)
+        base = datetime.now().strftime("record_%Y%m%d_%H%M%S")
+        # 指令 CSV（UTF-8 BOM，Excel 直接打开）
+        p1 = os.path.join(self._shot_dir, base + "_cmd.csv")
+        with open(p1, "w", encoding="utf-8-sig") as f:
+            f.write("time,content,desc\n")
+            for (ts, line, desc) in self._cmd_rows:
+                f.write("%s,%s,%s\n" % (ts, line, desc))
+        # 遥测 CSV（11 列，UTF-8 BOM）
+        p2 = os.path.join(self._shot_dir, base + "_tele.csv")
+        with open(p2, "w", encoding="utf-8-sig") as f:
+            f.write(",".join(_TELE_COLS) + "\n")
             for row in self._tele_rows:
-                f.write("%s,tele,%s,%s\n" % (row[0], ",".join(map(str, row[1:])), "遥测记录"))
-        self._flash("已导出记录：%s" % path, "ok")
+                f.write(",".join(map(str, row)) + "\n")
+        self._flash("已导出：%s + %s" % (p1, p2), "ok")
 
     # ---------------- 日志信息 ----------------
     def _logs_page(self):
@@ -2550,7 +2577,7 @@ class Dashboard(QWidget):
         if self._raw_send(line):
             desc = proto.describe_command(line)
             self._cmd_rows.append((datetime.now().strftime("%H:%M:%S"), line, desc))
-            if hasattr(self, "_data_table"):
+            if hasattr(self, "_cmd_table"):
                 self._append_data_row("指令", line, desc)
             if announce:
                 self._flash(desc, "ok")
@@ -2812,6 +2839,10 @@ class Dashboard(QWidget):
         line = proto.emergency_stop_command()
         self._flash("！！！ 急停（%s）" % line, "err")
         self._raw_send(line)
+        # 急停入库（也可在数据管理页看到）
+        self._cmd_rows.append((datetime.now().strftime("%H:%M:%S"), line, "急停"))
+        if hasattr(self, "_apply_data_filter"):
+            self._apply_data_filter()
         self._sync_quick_ui()
 
     def _on_light(self, v):
@@ -2942,7 +2973,9 @@ class Dashboard(QWidget):
             self._tele_rows.append((now.strftime("%H:%M:%S"),
                                     round(v["depth_m"], 1), round(v["yaw_deg"], 1),
                                     round(v["pitch_deg"], 1), round(v["roll_deg"], 1),
-                                    round(v["water_temp"], 1), round(v["voltage"], 1)))
+                                    round(v["water_temp"], 1), round(v_sys["voltage"], 1),
+                                    round(v_sys["battery"], 1), round(v_sys["cabin_temp"], 1),
+                                    round(v_sys["humidity"], 1), round(v["motor_temp"], 1)))
             if len(self._tele_rows) > 5000:
                 self._tele_rows.pop(0)
         # 数据管理页周期性刷新表（纳入新遥测）

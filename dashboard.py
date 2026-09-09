@@ -1557,7 +1557,7 @@ class Dashboard(QWidget):
         page = QWidget()
         grid = QGridLayout(page)
         grid.setContentsMargins(10, 6, 10, 6)
-        grid.setSpacing(10)
+        grid.setSpacing(18)
 
         box, body = _panel("系统设置 · 主控连接", CYAN)
         r = QHBoxLayout()
@@ -1617,7 +1617,6 @@ class Dashboard(QWidget):
         brow.addWidget(btn_exp)
         brow.addWidget(btn_imp)
         body.addLayout(brow)
-        grid.addWidget(box, 0, 0, Qt.AlignTop)
 
         # 视频与数据设置（每路独立的 端口/帧率/画质）
         vbox, vbody = _panel("视频与数据（CAM1 / CAM2 画面设置）", GREEN)
@@ -1656,7 +1655,14 @@ class Dashboard(QWidget):
         self._set_datadir.setReadOnly(True)
         v2.addWidget(self._set_datadir, 1)
         vbody.addLayout(v2)
-        grid.addWidget(vbox, 0, 1, Qt.AlignTop)
+
+        # ljzzzzzzzzzzzz 式：两模块竖向堆叠、全宽紧凑排布
+        v_layout = QVBoxLayout()
+        v_layout.setSpacing(14)
+        v_layout.setContentsMargins(0, 10, 0, 10)
+        v_layout.addWidget(box)
+        v_layout.addWidget(vbox)
+        grid.addLayout(v_layout, 0, 0, 1, 2)
 
         about, about_body = _panel("系统信息", BLUE)
         for line in ("软件：智能水下清洁机器人控制系统 V1.0",

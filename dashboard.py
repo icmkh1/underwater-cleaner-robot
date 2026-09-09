@@ -337,6 +337,192 @@ class LogView(QTextBrowser):
         bar.setValue(bar.maximum())
 
 
+class MagnetPanel(QWidget):
+    """自包含磁轮控制面板：自主/手动切换 + 四轮磁力 + 总磁力主滑块 + 工作状态（可在多处复用）"""
+
+    def __init__(self, parent=None):
+        super(MagnetPanel, self).__init__(parent)
+        self._mode = "auto"
+        self._cur = {"FL": 0, "FR": 0, "RL": 0, "RR": 0}
+        _sq = ("QSlider::groove:horizontal { height:5px; background:#14233f; border-radius:2px; }"
+               "QSlider::handle:horizontal { width:11px; margin:-4px 0; border-radius:6px;"
+               " background:%s; border:1px solid #bdeaff; }"
+               "QSlider::sub-page:horizontal { background:rgba(49,196,243,120); border-radius:2px; }" % CYAN)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        mrow = QHBoxLayout()
+        mrow.setSpacing(6)
+        self._auto = QPushButton("自主调控")
+        self._manual = QPushButton("手动介入")
+        for b in (self._auto, self._manual):
+            b.setObjectName("ghostBtn")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+        self._auto.setChecked(True)
+        self._auto.clicked.connect(lambda: self._set_mode("auto"))
+        self._manual.clicked.connect(lambda: self._set_mode("manual"))
+        mrow.addWidget(self._auto)
+        mrow.addWidget(self._manual)
+        mrow.addStretch(1)
+        pu = QLabel("PWM")
+        pu.setStyleSheet("color:%s;font-size:10px;" % TXT_SUB)
+        mrow.addWidget(pu)
+        lay.addLayout(mrow)
+
+        # 自主区（只读 bars + 状态）
+        self._auto_panel = QWidget()
+        ap = QVBoxLayout(self._auto_panel)
+        ap.setContentsMargins(0, 0, 0, 0)
+        ap.setSpacing(4)
+        g = QGridLayout()
+        g.setSpacing(6)
+        self._bars, self._vals = {}, {}
+        for idx, (tag, name) in enumerate((("FL", "前左"), ("FR", "前右"),
+                                           ("RL", "后左"), ("RR", "后右"))):
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            lb = QLabel(name)
+            lb.setStyleSheet("color:%s;font-size:12px;" % TXT_SUB)
+            lb.setFixedWidth(28)
+            bar = QProgressBar()
+            bar.setRange(0, 255)
+            bar.setValue(0)
+            bar.setFixedHeight(10)
+            bar.setFormat("")
+            bar.setStyleSheet("QProgressBar::chunk{background:%s;border-radius:3px;}" % CYAN)
+            v = QLabel("0")
+            v.setStyleSheet("color:%s;font-size:12px;font-weight:800;" % CYAN)
+            _mono(v)
+            v.setFixedWidth(28)
+            v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cell.addWidget(lb)
+            cell.addWidget(bar, 1)
+            cell.addWidget(v)
+            g.addLayout(cell, idx // 2, idx % 2)
+            self._bars[tag] = bar
+            self._vals[tag] = v
+        ap.addLayout(g)
+        ap.addStretch(1)
+        ap.addWidget(self._mk_status())
+        lay.addWidget(self._auto_panel, 1)
+
+        # 手动区
+        self._ctl_panel = QWidget()
+        cp = QVBoxLayout(self._ctl_panel)
+        cp.setContentsMargins(0, 0, 0, 0)
+        cp.setSpacing(4)
+        mg = QGridLayout()
+        mg.setSpacing(6)
+        mg.setVerticalSpacing(4)
+        self._sliders, self._slider_vals = {}, {}
+        for idx, (tag, name) in enumerate((("FL", "前左"), ("FR", "前右"),
+                                           ("RL", "后左"), ("RR", "后右"))):
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            lb = QLabel(name)
+            lb.setStyleSheet("color:%s;font-size:12px;" % TXT_SUB)
+            lb.setFixedWidth(28)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(0, 255)
+            sl.setStyleSheet(_sq)
+            sl.setFixedHeight(20)
+            sl.valueChanged.connect(lambda v, t=tag: self._on_wheel(t, v))
+            v = QLabel("0")
+            v.setStyleSheet("color:%s;font-size:12px;font-weight:800;" % CYAN)
+            _mono(v)
+            v.setFixedWidth(28)
+            v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cell.addWidget(lb)
+            cell.addWidget(sl, 1)
+            cell.addWidget(v)
+            mg.addLayout(cell, idx // 2, idx % 2)
+            self._sliders[tag] = sl
+            self._slider_vals[tag] = v
+        cp.addLayout(mg)
+        cp.addStretch(1)
+        srow = QHBoxLayout()
+        srow.setSpacing(6)
+        srow.addWidget(QLabel("总磁力"))
+        self._master = QSlider(Qt.Horizontal)
+        self._master.setRange(0, 255)
+        self._master.setStyleSheet(_sq)
+        self._master.setFixedHeight(20)
+        self._master.valueChanged.connect(self._on_master)
+        srow.addWidget(self._master, 1)
+        self._master_val = QLabel("0")
+        self._master_val.setStyleSheet("color:%s;font-size:12px;font-weight:800;" % CYAN)
+        _mono(self._master_val)
+        self._master_val.setFixedWidth(28)
+        self._master_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        srow.addWidget(self._master_val)
+        cp.addLayout(srow)
+        lay.addWidget(self._ctl_panel, 1)
+
+        self._set_mode("auto")
+
+    def _mk_status(self):
+        box = QFrame()
+        box.setObjectName("magStatusBox")
+        box.setStyleSheet(
+            "QFrame#magStatusBox{background:rgba(15,30,55,160);"
+            "border:1px solid #33577f;border-radius:8px;}")
+        l = QHBoxLayout(box)
+        l.setContentsMargins(10, 6, 10, 6)
+        l.setSpacing(8)
+        lab = QLabel("工作状态")
+        lab.setStyleSheet("color:%s;font-size:12px;border:none;background:transparent;" % TXT_SUB)
+        self._status_dot = QLabel()
+        self._status_dot.setFixedSize(10, 10)
+        self._status_text = QLabel("")
+        l.addWidget(lab)
+        l.addStretch(1)
+        l.addWidget(self._status_dot)
+        l.addWidget(self._status_text)
+        self.set_status("normal")
+        return box
+
+    def set_status(self, level):
+        st = {"excellent": ("优良", GREEN), "normal": ("正常", CYAN),
+              "warn": ("建议手动介入", YELLOW)}
+        text, color = st.get(level, st["normal"])
+        self._status_text.setText(text)
+        self._status_text.setStyleSheet(
+            "color:%s;font-size:13px;font-weight:800;border:none;background:transparent;" % color)
+        self._status_dot.setStyleSheet("background:%s;border-radius:5px;border:none;" % color)
+
+    def _set_mode(self, mode):
+        self._mode = mode
+        self._auto.setChecked(mode == "auto")
+        self._manual.setChecked(mode == "manual")
+        self._auto_panel.setVisible(mode == "auto")
+        self._ctl_panel.setVisible(mode == "manual")
+        if mode == "auto":
+            sim = {"FL": 180, "FR": 180, "RL": 140, "RR": 140}
+            self._cur.update(sim)
+            for tag, v in sim.items():
+                self._bars[tag].setValue(v)
+                self._vals[tag].setText(str(v))
+        else:
+            for tag in ("FL", "FR", "RL", "RR"):
+                self._sliders[tag].setValue(self._cur[tag])
+            avg = int(round(sum(self._cur.values()) / 4))
+            self._master.blockSignals(True)
+            self._master.setValue(avg)
+            self._master.blockSignals(False)
+            self._master_val.setText(str(avg))
+
+    def _on_master(self, v):
+        self._master_val.setText(str(v))
+        for tag in ("FL", "FR", "RL", "RR"):
+            self._sliders[tag].setValue(v)
+
+    def _on_wheel(self, tag, v):
+        self._cur[tag] = v
+        self._slider_vals[tag].setText(str(v))
+
+
 class Dashboard(QWidget):
     log_line = Signal(str)         # (level|text) 用于告警信息流
     STATUS_LEVELS = {"ok": GREEN, "info": CYAN, "warn": YELLOW, "err": RED}
@@ -1000,6 +1186,38 @@ class Dashboard(QWidget):
         grid.addWidget(cam_box, 0, 1)
         grid.setColumnStretch(1, 3)
 
+        # 运动控制（自主控制页，复用 _move/启动/急停）
+        mv_box, mv_body = _panel("运动控制", BLUE)
+        mv_grid = QGridLayout()
+        mv_grid.setSpacing(4)
+        dirs = [("▲ 前进", "forward", 0, 1), ("◄ 左转", "left", 1, 0),
+                ("⏹ 停止", "stop", 1, 1), ("► 右转", "right", 1, 2),
+                ("▼ 后退", "backward", 2, 1)]
+        for text, act, r, c in dirs:
+            b = QPushButton(text)
+            b.setObjectName("moveBtn")
+            b.setCursor(Qt.PointingHandCursor)
+            if act == "stop":
+                b.clicked.connect(self.stop_idle)
+            else:
+                b.clicked.connect(lambda _=False, a=act: self._move(a))
+            mv_grid.addWidget(b, r, c)
+        mv_body.addLayout(mv_grid)
+        ctrl = QHBoxLayout()
+        for text, fn in (("▶ 启动", self.start_run), ("⛔ 急停", self.emergency)):
+            b = QPushButton(text)
+            b.setObjectName("solidBtn")
+            b.clicked.connect(fn)
+            ctrl.addWidget(b)
+        mv_body.addLayout(ctrl)
+        grid.addWidget(mv_box, 1, 0, Qt.AlignTop)
+
+        # 磁轮控制（自主控制页，复用 MagnetPanel）
+        mag_box, mag_body = _panel("磁轮控制", CYAN)
+        self._ac_magnet = MagnetPanel()
+        mag_body.addWidget(self._ac_magnet)
+        grid.addWidget(mag_box, 1, 1, Qt.AlignTop)
+
         # 机器数据（下方 · 演示归零，字号加大、两列紧凑排布）
         data_box, data_body = _panel("机器数据", GREEN)
         mrows = QGridLayout()
@@ -1014,8 +1232,7 @@ class Dashboard(QWidget):
             ("存储空间", "storage_gb", "%.0f GB", TXT, "storage"),
             ("电机温度", "motor_temp", "%.1f °C", TXT, "motor"),
             ("推进器状态", None, None, GREEN, "motor"),
-            ("连接状态", None, None, TXT_SUB, "link"),
-        )
+            ("连接状态", None, None, TXT_SUB, "link"),)
         for idx, (label, key, fmt, col, icon) in enumerate(items):
             if fmt is None:
                 value = "正常" if label == "推进器状态" else "离线"
@@ -1046,9 +1263,10 @@ class Dashboard(QWidget):
                                     fmt if fmt is not None else None, col))
         data_body.addLayout(mrows)
         data_body.addStretch(1)
-        grid.addWidget(data_box, 1, 0, 1, 2)
-        grid.setRowStretch(0, 4)
+        grid.addWidget(data_box, 2, 0, 1, 2)
+        grid.setRowStretch(0, 3)
         grid.setRowStretch(1, 3)
+        grid.setRowStretch(2, 2)
         return page
 
     def _update_auto_data(self):
@@ -2698,14 +2916,12 @@ class Dashboard(QWidget):
             val.setText(fmt % v_sys[key])
         self._bat_bar.setValue(int(v_sys["battery"]))
         # 磁轮工作状态实时分级：优良 / 正常 / 建议手动介入（依据磁力计读数）
+        mu = v_sys["mag_ut"] if self._lively else 128.4
+        level = "excellent" if mu >= 150 else ("normal" if mu >= 100 else "warn")
         if hasattr(self, "_mag_status_text") and self._mag_mode == "auto":
-            mu = v_sys["mag_ut"] if self._lively else 128.4
-            if mu >= 150:
-                self._set_mag_status("excellent")
-            elif mu >= 100:
-                self._set_mag_status("normal")
-            else:
-                self._set_mag_status("warn")
+            self._set_mag_status(level)
+        if getattr(self, "_ac_magnet", None) is not None:
+            self._ac_magnet.set_status(level)
         # 顶部紧凑状态条
         if hasattr(self, "_tool_depth"):
             self._tool_depth.setText("%.1f m" % v["depth_m"])

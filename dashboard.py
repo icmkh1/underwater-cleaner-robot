@@ -749,7 +749,38 @@ class Dashboard(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(12)
-        box, body = _panel("任务规划 · 航点列表", CYAN)
+
+        # ---- 上半：仿真界面（左 北区湖 | 右 仿真2，互不重叠）----
+        sim_box, sim_body = _panel("仿真界面", CYAN)
+        simrow = QHBoxLayout()
+        simrow.setSpacing(10)
+        self._sim_img = QLabel("仿真地图加载中...")
+        # 深蓝渐变底（与面板同系，避免纯黑留白不协调）
+        self._sim_img.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #1a2b4a,stop:1 #0e1a30);"
+            "border:1px solid #2f5186;border-radius:8px;")
+        self._sim_img.setAlignment(Qt.AlignCenter)
+        self._sim_img.setMinimumHeight(220)
+        self._sim_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        simrow.addWidget(self._sim_img, 1)
+        self._sim_img2 = QLabel("仿真2加载中...")
+        self._sim_img2.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #1a2b4a,stop:1 #0e1a30);"
+            "border:1px solid #2f5186;border-radius:8px;")
+        self._sim_img2.setAlignment(Qt.AlignCenter)
+        self._sim_img2.setMinimumHeight(220)
+        self._sim_img2.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        simrow.addWidget(self._sim_img2, 1)
+        sim_body.addLayout(simrow, 1)
+        lay.addWidget(sim_box, 4)
+
+        # ---- 下半：左 航点列表 | 右 路径预览(轨迹图) ----
+        low = QHBoxLayout()
+        low.setSpacing(12)
+
+        box, body = _panel("航点列表", CYAN)
         self._wp_table = QTableWidget(0, 4)
         self._wp_table.setHorizontalHeaderLabels(["航点", "X(m)", "Y(m)", "动作"])
         self._wp_table.setEditTriggers(QTableWidget.AllEditTriggers)   # 可编辑，双击单元格输入
@@ -781,22 +812,51 @@ class Dashboard(QWidget):
         brow.addWidget(btn_del)
         brow.addWidget(btn_run)
         body.addLayout(brow)
-        lay.addWidget(box, 1)
+        low.addWidget(box, 7)
 
         pbox, pbody = _panel("路径预览", CYAN)
-        self._wp_plot = pg.PlotWidget()
-        self._wp_plot.setBackground(QColor(BG0))
-        self._wp_plot.showGrid(x=True, y=True, alpha=0.15)
-        self._wp_plot.hideButtons()
-        self._wp_plot.setLabel("left", "Y(m)", color=TXT_SUB)
-        self._wp_plot.setLabel("bottom", "X(m)", color=TXT_SUB)
-        self._wp_curve = self._wp_plot.plot(pen=pg.mkPen(CYAN, width=2))
-        self._wp_points = None
-        pbody.addWidget(self._wp_plot)
-        lay.addWidget(pbox, 1)
+        self._wp_img = QLabel("轨迹图加载中...")
+        self._wp_img.setObjectName("video")
+        self._wp_img.setAlignment(Qt.AlignCenter)
+        self._wp_img.setMinimumSize(280, 180)
+        self._wp_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._wp_img.setScaledContents(True)   # 轨迹图始终拉伸贴合框，避免遮盖/留白
+        pbody.addWidget(self._wp_img, 1)
+        low.addWidget(pbox, 4)
+        lay.addLayout(low, 4)
+
         self._wp_table.itemChanged.connect(self._refresh_path_preview)
-        self._refresh_path_preview()
+        # 延迟到窗口布局完成再加载图片（需要 QLabel 的真实尺寸）
+        QTimer.singleShot(200, self._load_mission_imgs)
         return page
+
+    def _load_mission_imgs(self):
+        """任务规划页静态图：仿真界面=北区湖完整显示(留白为深底)；
+        路径预览=轨迹图铺满框无留白(按框比例中心裁剪,不变形)"""
+        try:
+            p1 = os.path.join(ASSET_DIR, "beiqu_lake.png")
+            if os.path.exists(p1) and self._sim_img.width() > 20:
+                pm = QPixmap(p1)
+                if not pm.isNull():
+                    self._sim_img.setPixmap(pm.scaled(
+                        self._sim_img.width(), self._sim_img.height(),
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            p2 = os.path.join(ASSET_DIR, "track_plot.png")
+            if os.path.exists(p2) and self._wp_img.width() > 20:
+                pm = QPixmap(p2)
+                if not pm.isNull():
+                    # setScaledContents=True：原图交给 QLabel 随时按框拉伸，无需手动缩放
+                    self._wp_img.setPixmap(pm)
+            p3 = os.path.join(ASSET_DIR, "sim2.png")
+            if os.path.exists(p3) and getattr(self, "_sim_img2", None) is not None \
+                    and self._sim_img2.width() > 20:
+                pm = QPixmap(p3)
+                if not pm.isNull():
+                    self._sim_img2.setPixmap(pm.scaled(
+                        self._sim_img2.width(), self._sim_img2.height(),
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception as exc:
+            self._flash("任务规划图片加载失败：%s" % exc, "err")
 
     def _refresh_path_preview(self):
         if not hasattr(self, "_wp_curve"):
@@ -2050,6 +2110,9 @@ class Dashboard(QWidget):
             self._refresh_logs_table()
         elif name == "数据管理":
             self._refresh_data_stats()
+        elif name == "任务规划":
+            # 该页图片需等布局完成才能按真实框尺寸铺放
+            QTimer.singleShot(80, self._load_mission_imgs)
 
     # =====================================================================
     def closeEvent(self, event):

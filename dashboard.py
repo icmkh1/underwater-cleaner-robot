@@ -660,6 +660,7 @@ class Dashboard(QWidget):
         self._task_box, self._task_body = _panel("任务信息", CYAN)
         self._sensor_box, self._sensor_body = _panel("传感器数据", GREEN)
         self._alarm_box, self._alarm_body = _panel("推进器输出与告警", YELLOW)
+        self._magnet_box, self._magnet_body = _panel("磁轮控制", BLUE)
 
         # 主区：左视频(主画面, 撑满) + 右紧凑卡片列(贴内容, 顶部对齐)
         main = QHBoxLayout()
@@ -675,17 +676,19 @@ class Dashboard(QWidget):
         main.addLayout(right, 4)
         outer.addLayout(main, 1)
 
-        # 底部紧凑横带：任务信息 / 传感器数据 / 推进器输出与告警（Expanding 填满）
+        # 底部紧凑横带：任务信息 / 传感器数据 / 推进器输出与告警 / 磁轮控制（Expanding 填满）
         bottom = QHBoxLayout()
         bottom.setSpacing(6)
-        for b in (self._task_box, self._sensor_box, self._alarm_box):
+        for b in (self._task_box, self._sensor_box, self._alarm_box, self._magnet_box):
             b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self._task_box.setMinimumHeight(132)
-        self._sensor_box.setMinimumHeight(132)
-        self._alarm_box.setMinimumHeight(132)
+        self._task_box.setMinimumHeight(165)
+        self._sensor_box.setMinimumHeight(165)
+        self._alarm_box.setMinimumHeight(165)
+        self._magnet_box.setMinimumHeight(165)
         bottom.addWidget(self._task_box, 1)
         bottom.addWidget(self._sensor_box, 1)
-        bottom.addWidget(self._alarm_box, 2)
+        bottom.addWidget(self._alarm_box, 1)
+        bottom.addWidget(self._magnet_box, 1)
         outer.addLayout(bottom)
 
         self._build_video()
@@ -694,6 +697,7 @@ class Dashboard(QWidget):
         self._build_task()
         self._build_sensor()
         self._build_thruster_alarm()
+        self._build_magnet()
         return page
 
     # =====================================================================
@@ -2118,6 +2122,189 @@ class Dashboard(QWidget):
         clear.clicked.connect(lambda: self._log.clear())
         body.addWidget(clear, 0, Qt.AlignRight)
 
+    # ------------------------------------------------------------------
+    # 磁轮控制（PR#5 合入：四轮磁力 自主/手动 调控 + 工作状态分级）
+    # ------------------------------------------------------------------
+    def _build_magnet(self):
+        body = self._magnet_body
+        _slider_qss = (
+            "QSlider::groove:horizontal { height:5px; background:#14233f; border-radius:2px; }"
+            "QSlider::handle:horizontal { width:11px; margin:-4px 0; border-radius:6px;"
+            " background:%s; border:1px solid #bdeaff; }"
+            "QSlider::sub-page:horizontal { background:rgba(49,196,243,120); border-radius:2px; }" % CYAN)
+
+        self._mag_mode = "auto"
+        self._mag_current = {"FL": 0, "FR": 0, "RL": 0, "RR": 0}
+        mrow = QHBoxLayout()
+        mrow.setSpacing(6)
+        self._mag_auto = QPushButton("自主调控")
+        self._mag_manual = QPushButton("手动介入")
+        for b in (self._mag_auto, self._mag_manual):
+            b.setObjectName("ghostBtn")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+        self._mag_auto.setChecked(True)
+        self._mag_auto.clicked.connect(lambda: self._set_mag_mode("auto"))
+        self._mag_manual.clicked.connect(lambda: self._set_mag_mode("manual"))
+        mrow.addWidget(self._mag_auto)
+        mrow.addWidget(self._mag_manual)
+        mrow.addStretch(1)
+        pwm_unit = QLabel("PWM")
+        pwm_unit.setStyleSheet("color:%s; font-size:10px;" % TXT_SUB)
+        mrow.addWidget(pwm_unit)
+        body.addLayout(mrow)
+
+        # 自主调控区（默认显示）
+        self._mag_auto_panel = QWidget()
+        autop = QVBoxLayout(self._mag_auto_panel)
+        autop.setContentsMargins(0, 0, 0, 0)
+        autop.setSpacing(4)
+        agrid = QGridLayout()
+        agrid.setSpacing(6)
+        self._mag_bars, self._mag_vals = {}, {}
+        for idx, (tag, name) in enumerate((("FL", "前左"), ("FR", "前右"),
+                                           ("RL", "后左"), ("RR", "后右"))):
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            lab = QLabel(name)
+            lab.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+            lab.setFixedWidth(28)
+            bar = QProgressBar()
+            bar.setRange(0, 255)
+            bar.setValue(0)
+            bar.setFixedHeight(10)
+            bar.setFormat("")
+            bar.setStyleSheet("QProgressBar::chunk{background:%s; border-radius:3px;}" % CYAN)
+            val = QLabel("0")
+            val.setStyleSheet("color:%s; font-size:12px; font-weight:800;" % CYAN)
+            _mono(val)
+            val.setFixedWidth(28)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cell.addWidget(lab)
+            cell.addWidget(bar, 1)
+            cell.addWidget(val)
+            agrid.addLayout(cell, idx // 2, idx % 2)
+            self._mag_bars[tag] = bar
+            self._mag_vals[tag] = val
+        autop.addLayout(agrid)
+        autop.addStretch(1)
+        autop.addWidget(self._build_mag_status())
+        body.addWidget(self._mag_auto_panel, 1)
+
+        # 手动介入区（默认隐藏）
+        self._mag_ctl = QWidget()
+        ctl = QVBoxLayout(self._mag_ctl)
+        ctl.setContentsMargins(0, 0, 0, 0)
+        ctl.setSpacing(4)
+        mgrid = QGridLayout()
+        mgrid.setSpacing(6)
+        mgrid.setVerticalSpacing(4)
+        self._mag_sliders, self._mag_slider_vals = {}, {}
+        for idx, (tag, name) in enumerate((("FL", "前左"), ("FR", "前右"),
+                                           ("RL", "后左"), ("RR", "后右"))):
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            lab = QLabel(name)
+            lab.setStyleSheet("color:%s; font-size:12px;" % TXT_SUB)
+            lab.setFixedWidth(28)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(0, 255)
+            sl.setStyleSheet(_slider_qss)
+            sl.setFixedHeight(20)
+            sl.valueChanged.connect(lambda v, t=tag: self._on_mag_wheel(t, v))
+            val = QLabel("0")
+            val.setStyleSheet("color:%s; font-size:12px; font-weight:800;" % CYAN)
+            _mono(val)
+            val.setFixedWidth(28)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cell.addWidget(lab)
+            cell.addWidget(sl, 1)
+            cell.addWidget(val)
+            mgrid.addLayout(cell, idx // 2, idx % 2)
+            self._mag_sliders[tag] = sl
+            self._mag_slider_vals[tag] = val
+        ctl.addLayout(mgrid)
+        ctl.addStretch(1)
+        srow = QHBoxLayout()
+        srow.setSpacing(6)
+        srow.addWidget(QLabel("总磁力"))
+        self._mag_master = QSlider(Qt.Horizontal)
+        self._mag_master.setRange(0, 255)
+        self._mag_master.setStyleSheet(_slider_qss)
+        self._mag_master.setFixedHeight(20)
+        self._mag_master.valueChanged.connect(self._on_mag_master)
+        srow.addWidget(self._mag_master, 1)
+        self._mag_master_val = QLabel("0")
+        self._mag_master_val.setStyleSheet("color:%s; font-size:12px; font-weight:800;" % CYAN)
+        _mono(self._mag_master_val)
+        self._mag_master_val.setFixedWidth(28)
+        self._mag_master_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        srow.addWidget(self._mag_master_val)
+        ctl.addLayout(srow)
+        body.addWidget(self._mag_ctl, 1)
+
+        self._set_mag_mode("auto")
+
+    def _build_mag_status(self):
+        box = QFrame()
+        box.setObjectName("magStatusBox")
+        box.setStyleSheet(
+            "QFrame#magStatusBox{ background:rgba(15,30,55,160);"
+            " border:1px solid #33577f; border-radius:8px; }")
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(8)
+        lab = QLabel("工作状态")
+        lab.setStyleSheet("color:%s; font-size:12px; border:none; background:transparent;" % TXT_SUB)
+        self._mag_status_dot = QLabel()
+        self._mag_status_dot.setFixedSize(10, 10)
+        self._mag_status_text = QLabel("")
+        lay.addWidget(lab)
+        lay.addStretch(1)
+        lay.addWidget(self._mag_status_dot)
+        lay.addWidget(self._mag_status_text)
+        self._set_mag_status("normal")
+        return box
+
+    def _set_mag_status(self, level):
+        styles = {"excellent": ("优良", GREEN), "normal": ("正常", CYAN),
+                  "warn": ("建议手动介入", YELLOW)}
+        text, color = styles.get(level, styles["normal"])
+        self._mag_status_text.setText(text)
+        self._mag_status_text.setStyleSheet(
+            "color:%s; font-size:13px; font-weight:800; border:none; background:transparent;" % color)
+        self._mag_status_dot.setStyleSheet("background:%s; border-radius:5px; border:none;" % color)
+
+    def _set_mag_mode(self, mode):
+        self._mag_mode = mode
+        self._mag_auto.setChecked(mode == "auto")
+        self._mag_manual.setChecked(mode == "manual")
+        self._mag_auto_panel.setVisible(mode == "auto")
+        self._mag_ctl.setVisible(mode == "manual")
+        if mode == "auto":
+            sim = {"FL": 180, "FR": 180, "RL": 140, "RR": 140}
+            self._mag_current.update(sim)
+            for tag, v in sim.items():
+                self._mag_bars[tag].setValue(v)
+                self._mag_vals[tag].setText(str(v))
+        else:
+            for tag in ("FL", "FR", "RL", "RR"):
+                self._mag_sliders[tag].setValue(self._mag_current[tag])
+            avg = int(round(sum(self._mag_current.values()) / 4))
+            self._mag_master.blockSignals(True)
+            self._mag_master.setValue(avg)
+            self._mag_master.blockSignals(False)
+            self._mag_master_val.setText(str(avg))
+
+    def _on_mag_master(self, v):
+        self._mag_master_val.setText(str(v))
+        for tag in ("FL", "FR", "RL", "RR"):
+            self._mag_sliders[tag].setValue(v)
+
+    def _on_mag_wheel(self, tag, v):
+        self._mag_current[tag] = v
+        self._mag_slider_vals[tag].setText(str(v))
+
     # =====================================================================
     # 连接 / 视频
     # =====================================================================
@@ -2513,6 +2700,15 @@ class Dashboard(QWidget):
         for val, key, fmt, _col in self._sys_rows:
             val.setText(fmt % v_sys[key])
         self._bat_bar.setValue(int(v_sys["battery"]))
+        # 磁轮工作状态实时分级：优良 / 正常 / 建议手动介入（依据磁力计读数）
+        if hasattr(self, "_mag_status_text") and self._mag_mode == "auto":
+            mu = v_sys["mag_ut"] if self._lively else 128.4
+            if mu >= 150:
+                self._set_mag_status("excellent")
+            elif mu >= 100:
+                self._set_mag_status("normal")
+            else:
+                self._set_mag_status("warn")
         # 顶部紧凑状态条
         if hasattr(self, "_tool_depth"):
             self._tool_depth.setText("%.1f m" % v["depth_m"])

@@ -32,12 +32,14 @@ from PySide2.QtCore import QSize, Qt, QRectF, QTimer, Signal
 from PySide2.QtGui import (QColor, QFont, QImage, QLinearGradient, QPainter,
                            QPen, QPixmap, QRadialGradient)
 from PySide2.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -762,7 +764,7 @@ class Dashboard(QWidget):
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(10)
 
-        # 顶：仿真界面（李枫浩 idea：北区湖 + 仿真2 两张占位图，可用真图替换）
+        # 上半：仿真界面（北区湖 + 仿真2）
         sim_box, sim_body = _panel("仿真界面", CYAN)
         simrow = QHBoxLayout()
         simrow.setSpacing(10)
@@ -772,8 +774,8 @@ class Dashboard(QWidget):
             "stop:0 #1a2b4a,stop:1 #0e1a30);"
             "border:1px solid #2f5186;border-radius:8px;")
         self._sim_img.setAlignment(Qt.AlignCenter)
-        self._sim_img.setMinimumHeight(180)
-        self._sim_img.setScaledContents(False)
+        self._sim_img.setMinimumHeight(220)
+        self._sim_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         simrow.addWidget(self._sim_img, 1)
         self._sim_img2 = QLabel("仿真2加载中...")
         self._sim_img2.setStyleSheet(
@@ -781,111 +783,84 @@ class Dashboard(QWidget):
             "stop:0 #1a2b4a,stop:1 #0e1a30);"
             "border:1px solid #2f5186;border-radius:8px;")
         self._sim_img2.setAlignment(Qt.AlignCenter)
-        self._sim_img2.setMinimumHeight(180)
-        self._sim_img2.setScaledContents(False)
+        self._sim_img2.setMinimumHeight(220)
+        self._sim_img2.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         simrow.addWidget(self._sim_img2, 1)
         sim_body.addLayout(simrow, 1)
-        lay.addWidget(sim_box, 1)
+        lay.addWidget(sim_box, 4)
 
-        box, body = _panel("任务规划 · 航点与执行", CYAN)
-
-        # 任务配置（模式/深度/速度）
-        cfg = QHBoxLayout()
-        cfg.setSpacing(10)
-        cfg.addWidget(QLabel("任务模式"))
-        self._wp_mode = QComboBox()
-        self._wp_mode.addItems(["定深巡航", "定速巡航", "循迹"])
-        cfg.addWidget(self._wp_mode)
-        cfg.addWidget(QLabel("目标深度"))
-        self._wp_depth = QSpinBox()
-        self._wp_depth.setRange(0, 50)
-        self._wp_depth.setValue(5)
-        self._wp_depth.setSuffix(" m")
-        cfg.addWidget(self._wp_depth)
-        cfg.addWidget(QLabel("巡航速度"))
-        self._wp_speed = QSpinBox()
-        self._wp_speed.setRange(0, 255)
-        self._wp_speed.setValue(120)
-        self._wp_speed.setSuffix(" PWM")
-        cfg.addWidget(self._wp_speed)
-        cfg.addStretch(1)
-        body.addLayout(cfg)
-
+        # 下半：左 航点列表 | 右 路径预览（静态轨迹图）
+        low = QHBoxLayout()
+        low.setSpacing(12)
+        box, body = _panel("航点列表", CYAN)
         self._wp_table = QTableWidget(0, 4)
         self._wp_table.setHorizontalHeaderLabels(["航点", "X(m)", "Y(m)", "动作"])
-        self._wp_table.setEditTriggers(QTableWidget.AllEditTriggers)   # 可编辑，双击单元格输入
+        self._wp_table.setEditTriggers(QTableWidget.AllEditTriggers)   # 可编辑，双击输入
+        self._wp_table.setStyleSheet(_DARK_TABLE_QSS)
+        self._wp_table.setAlternatingRowColors(True)
+        self._wp_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._wp_table.verticalHeader().setVisible(False)
+        self._wp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         body.addWidget(self._wp_table, 1)
         for i, (x, y) in enumerate([(0, 0), (4, 3), (9, 2), (14, 6), (20, 5), (26, 9)], 1):
             r = self._wp_table.rowCount()
             self._wp_table.insertRow(r)
             for c, val in enumerate([str(i), str(x), str(y), "获取图像"]):
-                self._wp_table.setItem(r, c, QTableWidgetItem(val))
-
-        # 编辑 + 执行控制
+                it = QTableWidgetItem(val)
+                it.setTextAlignment(
+                    Qt.AlignCenter if c in (0, 3) else (Qt.AlignRight | Qt.AlignVCenter))
+                self._wp_table.setItem(r, c, it)
         brow = QHBoxLayout()
-        brow.setSpacing(8)
-        for name, handler, ob in (("添加航点", self._add_waypoint, "ghostBtn"),
-                                  ("删除选中", self._del_waypoint, "ghostBtn"),
-                                  ("全部清除", self._clear_waypoints, "ghostBtn")):
-            b = QPushButton(name)
-            b.setObjectName(ob)
-            b.clicked.connect(handler)
-            brow.addWidget(b)
-        brow.addStretch(1)
-        for name, handler in (("▶ 开始任务", self._start_mission),
-                              ("⏸ 暂停", self._pause_mission),
-                              ("⏹ 停止", self._stop_mission)):
-            b = QPushButton(name)
+        btn_add = QPushButton("添加航点")
+        btn_del = QPushButton("删除选中航点")
+        btn_run = QPushButton("下发规划")
+        for b in (btn_add, btn_del, btn_run):
             b.setObjectName("solidBtn")
-            b.clicked.connect(handler)
-            brow.addWidget(b)
+        btn_add.clicked.connect(self._add_waypoint)
+        btn_del.clicked.connect(self._del_waypoint)
+        btn_run.clicked.connect(self._submit_mission)
+        brow.addWidget(btn_add)
+        brow.addWidget(btn_del)
+        brow.addWidget(btn_run)
         body.addLayout(brow)
-
-        # 执行状态 + 进度
-        self._wp_prog = QProgressBar()
-        self._wp_prog.setRange(0, 100)
-        self._wp_prog.setValue(0)
-        self._wp_prog.setFixedHeight(14)
-        self._wp_prog.setFormat("进度 %p%")
-        self._wp_prog.setStyleSheet(
-            "QProgressBar{background:#0b1730;border:1px solid #23436e;border-radius:4px;"
-            "text-align:center;color:%s;}"
-            "QProgressBar::chunk{background:%s;border-radius:3px;}" % (TXT_SUB, CYAN))
-        body.addWidget(self._wp_prog)
-        self._wp_state = QLabel("空闲 · 未开始 · 共 %d 个航点" % self._wp_table.rowCount())
-        self._wp_state.setStyleSheet("color:%s; font-size:17px; font-weight:700;" % TXT_SUB)
-        body.addWidget(self._wp_state)
-        lay.addWidget(box, 1)
+        low.addWidget(box, 7)
 
         pbox, pbody = _panel("路径预览", CYAN)
-        self._wp_plot = pg.PlotWidget()
-        self._wp_plot.setBackground(QColor(BG0))
-        self._wp_plot.showGrid(x=True, y=True, alpha=0.15)
-        self._wp_plot.hideButtons()
-        self._wp_plot.setLabel("left", "Y(m)", color=TXT_SUB)
-        self._wp_plot.setLabel("bottom", "X(m)", color=TXT_SUB)
-        self._wp_curve = self._wp_plot.plot(pen=pg.mkPen(CYAN, width=2))
-        self._wp_points = None
-        pbody.addWidget(self._wp_plot)
-        lay.addWidget(pbox, 1)
+        self._wp_img = QLabel("轨迹图加载中...")
+        self._wp_img.setObjectName("video")
+        self._wp_img.setAlignment(Qt.AlignCenter)
+        self._wp_img.setMinimumSize(280, 180)
+        self._wp_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self._wp_img.setScaledContents(True)   # 轨迹图拉伸贴合框
+        pbody.addWidget(self._wp_img, 1)
+        low.addWidget(pbox, 4)
+        lay.addLayout(low, 4)
+
         self._wp_table.itemChanged.connect(self._refresh_path_preview)
-        self._refresh_path_preview()
+        # 延迟到布局完成再加载图片
         QTimer.singleShot(200, self._load_mission_imgs)
         return page
 
     def _load_mission_imgs(self):
-        """加载任务规划页的仿真图（北区湖/仿真2 占位图，可替换为真图）。"""
+        """任务规划页静态图：仿真界面=北区湖/仿真2，路径预览=轨迹图。"""
         try:
-            for attr, fname in (("_sim_img", "beiqu_lake.png"), ("_sim_img2", "sim2.png")):
-                lab = getattr(self, attr, None)
-                if lab is None:
-                    continue
-                path = os.path.join(ASSET_DIR, fname)
-                if os.path.exists(path) and lab.width() > 20:
-                    pm = QPixmap(path)
-                    if not pm.isNull():
-                        lab.setPixmap(pm.scaled(lab.width(), lab.height(),
-                                               Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if os.path.exists(os.path.join(ASSET_DIR, "beiqu_lake.png")) and self._sim_img.width() > 20:
+                pm = QPixmap(os.path.join(ASSET_DIR, "beiqu_lake.png"))
+                if not pm.isNull():
+                    self._sim_img.setPixmap(pm.scaled(
+                        self._sim_img.width(), self._sim_img.height(),
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if os.path.exists(os.path.join(ASSET_DIR, "track_plot.png")) and self._wp_img.width() > 20:
+                pm = QPixmap(os.path.join(ASSET_DIR, "track_plot.png"))
+                if not pm.isNull():
+                    self._wp_img.setPixmap(pm)   # setScaledContents=True 拉伸贴合
+            if os.path.exists(os.path.join(ASSET_DIR, "sim2.png")) \
+                    and getattr(self, "_sim_img2", None) is not None and self._sim_img2.width() > 20:
+                pm = QPixmap(os.path.join(ASSET_DIR, "sim2.png"))
+                if not pm.isNull():
+                    self._sim_img2.setPixmap(pm.scaled(
+                        self._sim_img2.width(), self._sim_img2.height(),
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception as exc:
             self._flash("任务规划图片加载失败：%s" % exc, "err")
 
@@ -911,7 +886,10 @@ class Dashboard(QWidget):
         r = self._wp_table.rowCount()
         self._wp_table.insertRow(r)
         for c, val in enumerate([str(r + 1), "0", "0", "获取图像"]):
-            self._wp_table.setItem(r, c, QTableWidgetItem(val))
+            it = QTableWidgetItem(val)
+            it.setTextAlignment(
+                Qt.AlignCenter if c in (0, 3) else (Qt.AlignRight | Qt.AlignVCenter))
+            self._wp_table.setItem(r, c, it)
         self._refresh_path_preview()
         self._flash("已添加航点 %d（可双击编辑 X/Y/动作）" % (r + 1), "info")
 
@@ -928,30 +906,6 @@ class Dashboard(QWidget):
     def _submit_mission(self):
         rows = self._wp_table.rowCount()
         self._flash("任务规划：共 %d 个航点（演示——待接入任务系统后下发）" % rows, "warn")
-
-    def _clear_waypoints(self):
-        self._wp_table.setRowCount(0)
-        self._refresh_path_preview()
-        self._wp_prog.setValue(0)
-        self._wp_state.setText("已清空航点列表")
-        self._flash("已清空全部航点", "info")
-
-    def _start_mission(self):
-        n = self._wp_table.rowCount()
-        self._wp_prog.setValue(0)
-        self._wp_state.setText("运行中 · %s · 开始执行 %d 个航点" % (self._wp_mode.currentText(), n))
-        self._flash("任务开始：%s · %d 个航点 · 深度 %d m · 速度 %d PWM"
-                    % (self._wp_mode.currentText(), n, self._wp_depth.value(), self._wp_speed.value()),
-                    "ok")
-
-    def _pause_mission(self):
-        self._wp_state.setText("已暂停 · 等待继续")
-        self._flash("任务已暂停", "info")
-
-    def _stop_mission(self):
-        self._wp_prog.setValue(0)
-        self._wp_state.setText("已停止 · 任务终止")
-        self._flash("任务已停止", "warn")
 
     def _autonomous_page(self):
         page = QWidget()
@@ -2834,6 +2788,23 @@ class Dashboard(QWidget):
         except Exception:
             pass
         super(Dashboard, self).closeEvent(event)
+
+
+_DARK_TABLE_QSS = (
+    "QTableWidget{background:#0b1830;alternate-background-color:#0f2040;"
+    "color:#d7ecff;border:1px solid #27406b;border-radius:8px;"
+    "gridline-color:rgba(90,116,168,55);font-size:16px;"
+    "selection-background-color:transparent;}"
+    "QHeaderView{background:#152642;border:none;}"
+    "QTableWidget::item{padding:5px 6px;border-left:3px solid transparent;}"
+    "QTableWidget::item:hover{background:rgba(49,196,243,24);}"
+    "QTableWidget::item:selected{background:rgba(49,196,243,48);color:#ffffff;"
+    "border-left:3px solid #31C4F3;}"
+    "QHeaderView::section{background:#152642;color:#9fe7ff;border:none;"
+    "border-bottom:1px solid #2a4a7a;border-right:1px solid #203452;"
+    "padding:7px 8px;font-size:15px;font-weight:700;}"
+    "QTableCornerButton::section{background:#152642;border:none;}"
+)
 
 
 _ROOT_QSS = """

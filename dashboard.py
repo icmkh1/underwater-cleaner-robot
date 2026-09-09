@@ -761,6 +761,32 @@ class Dashboard(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(10)
+
+        # 顶：仿真界面（李枫浩 idea：北区湖 + 仿真2 两张占位图，可用真图替换）
+        sim_box, sim_body = _panel("仿真界面", CYAN)
+        simrow = QHBoxLayout()
+        simrow.setSpacing(10)
+        self._sim_img = QLabel("仿真地图加载中...")
+        self._sim_img.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #1a2b4a,stop:1 #0e1a30);"
+            "border:1px solid #2f5186;border-radius:8px;")
+        self._sim_img.setAlignment(Qt.AlignCenter)
+        self._sim_img.setMinimumHeight(180)
+        self._sim_img.setScaledContents(False)
+        simrow.addWidget(self._sim_img, 1)
+        self._sim_img2 = QLabel("仿真2加载中...")
+        self._sim_img2.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #1a2b4a,stop:1 #0e1a30);"
+            "border:1px solid #2f5186;border-radius:8px;")
+        self._sim_img2.setAlignment(Qt.AlignCenter)
+        self._sim_img2.setMinimumHeight(180)
+        self._sim_img2.setScaledContents(False)
+        simrow.addWidget(self._sim_img2, 1)
+        sim_body.addLayout(simrow, 1)
+        lay.addWidget(sim_box, 1)
+
         box, body = _panel("任务规划 · 航点与执行", CYAN)
 
         # 任务配置（模式/深度/速度）
@@ -844,7 +870,24 @@ class Dashboard(QWidget):
         lay.addWidget(pbox, 1)
         self._wp_table.itemChanged.connect(self._refresh_path_preview)
         self._refresh_path_preview()
+        QTimer.singleShot(200, self._load_mission_imgs)
         return page
+
+    def _load_mission_imgs(self):
+        """加载任务规划页的仿真图（北区湖/仿真2 占位图，可替换为真图）。"""
+        try:
+            for attr, fname in (("_sim_img", "beiqu_lake.png"), ("_sim_img2", "sim2.png")):
+                lab = getattr(self, attr, None)
+                if lab is None:
+                    continue
+                path = os.path.join(ASSET_DIR, fname)
+                if os.path.exists(path) and lab.width() > 20:
+                    pm = QPixmap(path)
+                    if not pm.isNull():
+                        lab.setPixmap(pm.scaled(lab.width(), lab.height(),
+                                               Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception as exc:
+            self._flash("任务规划图片加载失败：%s" % exc, "err")
 
     def _refresh_path_preview(self):
         if not hasattr(self, "_wp_curve"):
@@ -2758,6 +2801,8 @@ class Dashboard(QWidget):
             self._refresh_logs_table()
         elif name == "数据管理":
             self._refresh_data_stats()
+        elif name == "任务规划":
+            QTimer.singleShot(80, self._load_mission_imgs)
 
     # =====================================================================
     def keyPressEvent(self, event):
